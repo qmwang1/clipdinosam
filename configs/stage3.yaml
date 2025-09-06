@@ -27,7 +27,7 @@ loss:
   clip_align_weight: 0.1
   ssl_weight: 0.05
 
-epochs: 5
+epochs: 100
 
 lora:
   sam:

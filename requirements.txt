@@ -4,3 +4,7 @@ timm
 open-clip-torch
 pyyaml
 git+https://github.com/facebookresearch/segment-anything.git
+opencv-python
+pandas
+tqdm
+matplotlib

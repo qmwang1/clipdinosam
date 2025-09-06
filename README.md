@@ -69,10 +69,12 @@ Repo Layout
   - `lora.py`: LoRA modules and injection helpers.
   - `losses.py`: Dice, BCE, optional contrastive and SSL stubs.
   - `data/`: simple image(+mask) dataset.
+  - `eval/`: dual-circle evaluation utilities (inner/annulus/outer regions).
   - `trainer.py`: staged trainer to match the plan.
   - `config.py`: lightweight config loader with overrides.
 - `configs/`: example YAML configs per stage.
 - `scripts/train.py`: CLI entrypoint.
+- `scripts/eval_dual_circle.py`: dual-circle evaluation CLI.
 
 HAM10000 in VOC Style
 
@@ -103,3 +105,19 @@ python scripts/train.py --config configs/ham10000_voc_stage3.yaml data.root=/dat
   - You can set `data.split: path/to/list.txt` to a custom list file.
 
 This is a minimal scaffold intended for fast iteration. Extend as needed for your data and evaluation.
+
+Dual‑Circle Evaluation
+
+- Evaluate trained checkpoints on images with dual-circle annotations (inner lesion, ignored annulus, outer/background ring):
+
+```
+python scripts/eval_dual_circle.py \
+  --config configs/stage2.yaml \
+  --checkpoint experiments/runA-stage3/checkpoints/latest.pt \
+  --image_dir /path/to/no_circle_images \
+  --circle_dir /path/to/circle_masks \
+  --output_csv results_dual_circle.csv \
+  --visualize --vis_output_dir visualizations
+```
+
+- The script pairs files by replacing "-noCircles" with "-mask" and falls back to matching by stem (PNG). It computes TP in inner region, ignores the annulus, and counts FP in background (outer ring + beyond). Optional `--text` overrides the prompt from config.
