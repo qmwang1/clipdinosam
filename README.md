@@ -76,6 +76,13 @@ Repo Layout
 - `scripts/train.py`: CLI entrypoint.
 - `scripts/eval_dual_circle.py`: dual-circle evaluation CLI.
 
+Stages Overview
+
+- Stage 1: Train projection + SAM adapters (LoRA on SAM), DINO frozen
+- Stage 2: Add LoRA to last K DINO blocks; train only LoRA in DINO
+- Stage 3: Same as Stage 2 with lower LR and longer training
+- Stage 4: Fully unfreeze DINO (no DINO LoRA); SAM LoRA may remain enabled
+
 HAM10000 in VOC Style
 
 - Expected structure under `data.root`:
@@ -97,6 +104,11 @@ python scripts/train.py --config configs/ham10000_voc_stage2.yaml data.root=/dat
 Stage 3:
 ```
 python scripts/train.py --config configs/ham10000_voc_stage3.yaml data.root=/data/HAM10000_VOC
+```
+
+Stage 4 (full DINO unfreeze):
+```
+python scripts/train.py --config configs/ham10000_voc_stage4.yaml data.root=/data/HAM10000_VOC
 ```
 
 - Notes on preparation:

@@ -13,6 +13,7 @@ from clipdinosam.models import (
     CLIPDinoSam,
 )
 from clipdinosam.eval import evaluate_dual_circle_dataset
+from clipdinosam.lora import inject_lora_linear, set_trainable, enable_only_lora
 
 
 def build_model_from_cfg(cfg, device: torch.device) -> CLIPDinoSam:
@@ -24,6 +25,50 @@ def build_model_from_cfg(cfg, device: torch.device) -> CLIPDinoSam:
     token_to_text = TokenProjection(in_dim=dino.embed_dim, out_dim=mcfg["clip"].get("width", clip_text.width))
     token_to_mask = TokenToMaskEmbedding(in_dim=dino.embed_dim, embed_dim=mcfg["sam"].get("embed_dim", 256))
     model = CLIPDinoSam(dino, clip_text, sam, token_to_text, token_to_mask)
+
+    # Mirror training-time LoRA and freezing so checkpoints load properly
+    stage = cfg.get("stage", 1)
+    lora_cfg = cfg.get("lora", {})
+
+    # Freeze CLIP text; keep projections/sam adapters trainable
+    set_trainable(model.clip_text, False)
+    set_trainable(model.dino, False)
+    set_trainable(model.token_to_text, True)
+    set_trainable(model.token_to_mask, True)
+
+    # SAM LoRA injection (if enabled in config)
+    sam_lora = lora_cfg.get("sam", {})
+    if sam_lora.get("enable", True):
+        sam_targets = sam_lora.get("targets", ["attn", "mlp", "lin", "proj"])
+        inject_lora_linear(
+            model.sam,
+            sam_targets,
+            rank=sam_lora.get("rank", 8),
+            alpha=sam_lora.get("alpha", 8),
+            dropout=sam_lora.get("dropout", 0.0),
+        )
+
+    # DINO: LoRA stages vs full-unfreeze
+    if stage in (2, 3):
+        dino_lora = lora_cfg.get("dino", {})
+        if dino_lora.get("enable", True):
+            k = dino_lora.get("last_k_blocks", 2)
+            block_targets = []
+            if hasattr(model.dino.model, "blocks"):
+                total = len(model.dino.model.blocks)
+                for i in range(total - k, total):
+                    block_targets += [f"blocks.{i}.attn", f"blocks.{i}.mlp"]
+            inject_lora_linear(
+                model.dino.model,
+                block_targets,
+                rank=dino_lora.get("rank", 8),
+                alpha=dino_lora.get("alpha", 8),
+                dropout=dino_lora.get("dropout", 0.0),
+            )
+        enable_only_lora(model.dino)
+    elif stage >= 4:
+        set_trainable(model.dino, True)
+
     return model.to(device)
 
 
@@ -102,4 +147,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-

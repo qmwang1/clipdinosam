@@ -56,8 +56,8 @@ class Trainer:
             sam_targets = lora_cfg["sam"].get("targets", ["attn", "mlp", "lin", "proj"])
             inject_lora_linear(self.model.sam, sam_targets, rank=lora_cfg["sam"].get("rank", 8), alpha=lora_cfg["sam"].get("alpha", 8), dropout=lora_cfg["sam"].get("dropout", 0.0))
 
-        if stage >= 2:
-            # Add LoRA to DINO last K blocks
+        if stage in (2, 3):
+            # Add LoRA to DINO last K blocks and train only LoRA params
             dino_lora = lora_cfg.get("dino", {})
             if dino_lora.get("enable", True):
                 k = dino_lora.get("last_k_blocks", 2)
@@ -67,13 +67,18 @@ class Trainer:
                     total = len(self.model.dino.model.blocks)
                     for i in range(total - k, total):
                         block_targets += [f"blocks.{i}.attn", f"blocks.{i}.mlp"]
-                inject_lora_linear(self.model.dino.model, block_targets, rank=dino_lora.get("rank", 8), alpha=dino_lora.get("alpha", 8), dropout=dino_lora.get("dropout", 0.0))
+                inject_lora_linear(
+                    self.model.dino.model,
+                    block_targets,
+                    rank=dino_lora.get("rank", 8),
+                    alpha=dino_lora.get("alpha", 8),
+                    dropout=dino_lora.get("dropout", 0.0),
+                )
             # Keep DINO otherwise frozen (only LoRA updates trainable)
             enable_only_lora(self.model.dino)
-
-        if stage >= 3:
-            # Optionally unfreeze more of DINO with low LR (handled by optimizer groups)
-            pass
+        elif stage >= 4:
+            # Fully unfreeze DINO without adding LoRA adapters
+            set_trainable(self.model.dino, True)
 
         # Move entire model to the desired device AFTER LoRA injection so LoRA params move too
         self.model = self.model.to(self.device)

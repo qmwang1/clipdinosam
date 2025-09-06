@@ -1,4 +1,4 @@
-stage: 3
+stage: 4
 
 model:
   dino:
@@ -7,21 +7,20 @@ model:
     name: ViT-L-14
   sam:
     type: vit_b
+    # checkpoint: /path/to/sam_vit_b.pth  # optional
 
 data:
-  format: voc
-  root: /path/to/HAM10000_VOC
-  split: train
-  binary: true
-  text: "skin lesion"
+  root: /path/to/images
+  masks: /path/to/masks
+  text: "bruise"
   resize: 256
   crop: 224
   num_workers: 4
 
 optim:
   batch_size: 4
-  lr: 5.0e-5          # lower LR for more unfreeze
-  lora_lr: 3.0e-4
+  lr: 2.0e-5         # lower LR for full DINO unfreeze
+  lora_lr: 3.0e-4     # still used for SAM LoRA if enabled
   wd: 1.0e-4
 
 loss:
@@ -38,7 +37,7 @@ lora:
     dropout: 0.0
     targets: ["attn", "mlp", "proj", "lin"]
   dino:
-    enable: true
+    enable: false      # disable DINO LoRA for full unfreeze
     last_k_blocks: 8
     rank: 16
     alpha: 16

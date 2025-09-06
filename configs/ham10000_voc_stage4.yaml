@@ -1,4 +1,4 @@
-stage: 3
+stage: 4
 
 model:
   dino:
@@ -20,8 +20,8 @@ data:
 
 optim:
   batch_size: 4
-  lr: 5.0e-5          # lower LR for more unfreeze
-  lora_lr: 3.0e-4
+  lr: 2.0e-5         # lower LR for full DINO unfreeze
+  lora_lr: 3.0e-4     # still used for SAM LoRA if enabled
   wd: 1.0e-4
 
 loss:
@@ -38,7 +38,7 @@ lora:
     dropout: 0.0
     targets: ["attn", "mlp", "proj", "lin"]
   dino:
-    enable: true
+    enable: false      # disable DINO LoRA for full unfreeze
     last_k_blocks: 8
     rank: 16
     alpha: 16
