@@ -1,0 +1,46 @@
+stage: 2
+
+model:
+  dino:
+    name: vit_base_patch16_224.dino
+  clip:
+    name: ViT-L-14
+  sam:
+    type: vit_b
+
+data:
+  format: voc
+  root: /path/to/HAM10000_VOC
+  split: train
+  binary: true
+  text: "skin lesion"
+  resize: 256
+  crop: 224
+  num_workers: 4
+
+optim:
+  batch_size: 4
+  lr: 1.0e-4
+  lora_lr: 5.0e-4
+  wd: 1.0e-4
+
+loss:
+  clip_align_weight: 0.05
+  ssl_weight: 0.1
+
+epochs: 3
+
+lora:
+  sam:
+    enable: true
+    rank: 8
+    alpha: 8
+    dropout: 0.0
+    targets: ["attn", "mlp", "proj", "lin"]
+  dino:
+    enable: true
+    last_k_blocks: 4
+    rank: 16
+    alpha: 16
+    dropout: 0.0
+

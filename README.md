@@ -1,0 +1,105 @@
+CLIP-DINO-SAM with LoRA (staged fine-tuning)
+
+This project wires together a DINO/DINOv2 vision backbone, a frozen CLIP text encoder, and the SAM mask decoder (using its prompt encoder) to produce text-aware segmentation masks. It includes LoRA adapters and a staged training plan to minimize drift while adapting to your domain.
+
+Stages
+
+- Stage 0 — Initialise
+  - Backbone: DINOv2 ViT-L/14 or B/16 (pretrained).
+  - Text: CLIP text encoder (ViT-L/14, frozen).
+  - Seg head: SAM mask decoder + prompt encoder (pretrained), using DINO tokens as image embeddings via a light projection.
+
+- Stage 1 — Get it working
+  - Freeze DINO & CLIP.
+  - Train: thin image projection head (DINO tokens → CLIP dim) and SAM mask decoder adapters.
+  - Losses: Dice + BCE for masks; optional point/box robustness.
+
+- Stage 2 — Light domain adaptation (recommended)
+  - Add LoRA to DINO’s last 2–4 blocks.
+  - Keep CLIP text frozen; keep SAM adapters trainable.
+  - Data: mix unlabelled with labelled/pseudo-labelled. Optionally enable self-distillation/MIM (small weight) and CLIP alignment loss (small weight) to stabilise semantics.
+
+- Stage 3 — More labels (≥2–3k masks)
+  - Unfreeze more of DINO with low LR while keeping LoRA on; optionally tiny LoRA on CLIP text cross-attn inside the decoder.
+  - Keep CLIP alignment loss on to reduce degradation.
+
+Quick Start
+
+1) Prepare environment (PyTorch + CUDA recommended) and install deps:
+
+```
+# minimal set
+pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
+pip install timm open-clip-torch pyyaml
+# For SAM (only mask decoder + prompt encoder used)
+pip install git+https://github.com/facebookresearch/segment-anything.git
+```
+
+2) Place your SAM weights if needed (optional). If you want prebuilt decoders, set `sam.checkpoint` in configs.
+
+3) Run Stage 1 training:
+
+```
+python scripts/train.py --config configs/stage1.yaml data.root=/path/to/images data.masks=/path/to/masks
+```
+
+4) Stage 2 training:
+
+```
+python scripts/train.py --config configs/stage2.yaml data.root=/path/to/images data.masks=/path/to/masks
+```
+
+5) Stage 3 (only if enough labels):
+
+```
+python scripts/train.py --config configs/stage3.yaml data.root=/path/to/images data.masks=/path/to/masks
+```
+
+Notes
+
+- CLIP text encoder is kept frozen by default. You can enable a tiny LoRA rank via config if you must adapt prompts.
+- DINO image encoder starts frozen; LoRA can be injected in the last K blocks via config.
+- We bypass SAM’s heavy image encoder and instead feed projected DINO tokens to the mask decoder.
+- Losses available: Dice + BCE, optional CLIP contrastive alignment, optional SSL/MIM with small weight.
+
+Repo Layout
+
+- `clipdinosam/`
+  - `models/`: DINO, CLIP text, SAM decoder wrappers, projection heads, model assembly.
+  - `lora.py`: LoRA modules and injection helpers.
+  - `losses.py`: Dice, BCE, optional contrastive and SSL stubs.
+  - `data/`: simple image(+mask) dataset.
+  - `trainer.py`: staged trainer to match the plan.
+  - `config.py`: lightweight config loader with overrides.
+- `configs/`: example YAML configs per stage.
+- `scripts/train.py`: CLI entrypoint.
+
+HAM10000 in VOC Style
+
+- Expected structure under `data.root`:
+  - `JPEGImages/{id}.jpg` — original lesions (e.g., from HAM10000)
+  - `SegmentationClass/{id}.png` — binary masks (lesion=255 or >0, background=0)
+  - `ImageSets/Segmentation/train.txt` — optional list of ids for training (one per line)
+- Use the provided config: `configs/ham10000_voc_stage1.yaml` and set `data.root` to your prepared folder. Example:
+
+Stage 1:
+```
+python scripts/train.py --config configs/ham10000_voc_stage1.yaml data.root=/data/HAM10000_VOC
+```
+
+Stage 2:
+```
+python scripts/train.py --config configs/ham10000_voc_stage2.yaml data.root=/data/HAM10000_VOC
+```
+
+Stage 3:
+```
+python scripts/train.py --config configs/ham10000_voc_stage3.yaml data.root=/data/HAM10000_VOC
+```
+
+- Notes on preparation:
+  - Convert lesion masks to PNG with values 0 (background) and 255 (lesion). The loader converts them to binary tensors.
+  - If you don’t provide `ImageSets/Segmentation/train.txt`, the loader uses all images in `JPEGImages`.
+  - You can set `data.split: path/to/list.txt` to a custom list file.
+
+This is a minimal scaffold intended for fast iteration. Extend as needed for your data and evaluation.

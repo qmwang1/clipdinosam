@@ -1,0 +1,42 @@
+stage: 1
+
+model:
+  dino:
+    name: vit_base_patch16_224.dino
+  clip:
+    name: ViT-L-14
+  sam:
+    type: vit_b
+
+data:
+  format: voc
+  root: /path/to/HAM10000_VOC
+  # If you prepared ImageSets/Segmentation/train.txt, specify split:
+  split: train
+  # Use binary mask (lesion vs. background)
+  binary: true
+  text: "skin lesion"
+  resize: 256
+  crop: 224
+  num_workers: 4
+
+optim:
+  batch_size: 4
+  lr: 1.0e-4
+  lora_lr: 3.0e-4
+  wd: 1.0e-4
+
+loss:
+  clip_align_weight: 0.0
+  ssl_weight: 0.0
+
+epochs: 10
+
+lora:
+  sam:
+    enable: true
+    rank: 8
+    alpha: 8
+    dropout: 0.0
+    targets: ["attn", "mlp", "proj", "lin"]
+
