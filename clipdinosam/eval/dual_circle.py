@@ -103,30 +103,86 @@ def evaluate_dual_circle_single_image(pred_mask: np.ndarray, annotation_image_bg
         return None
 
 
-def _match_circle_mask(circle_dir: str, img_name: str) -> Optional[str]:
-    cand = img_name.replace("-noCircles", "-mask")
-    p = os.path.join(circle_dir, cand)
-    if os.path.exists(p):
-        return p
-    stem, _ = os.path.splitext(img_name)
-    p = os.path.join(circle_dir, stem + ".png")
-    if os.path.exists(p):
-        return p
-    base = stem
-    patterns = [f"{base}*mask*.png", f"{base}*circle*.png"]
-    for pat in patterns:
-        matches = glob.glob(os.path.join(circle_dir, pat))
-        if matches:
-            return matches[0]
+def _expand_path(path: Optional[str]) -> Optional[str]:
+    if path is None:
+        return None
+    return os.path.abspath(os.path.expanduser(path))
+
+
+def _list_files_recursive(root: str, exts: List[str]) -> List[str]:
+    files: List[str] = []
+    for ext in exts:
+        files.extend(glob.glob(os.path.join(root, "**", f"*.{ext}"), recursive=True))
+    return files
+
+
+def _match_circle_mask(
+    circle_dir: str,
+    img_name: str,
+    mask_files: Optional[List[str]] = None,
+) -> Optional[str]:
+    """
+    Try to find a corresponding mask for an image name using several heuristics:
+    - Exact basename match after replacing '-noCircles' with '-mask'
+    - Same stem (basename without extension)
+    - Stem with '-mask' replacement
+    - Filenames starting with stem and containing 'mask' or 'circle'
+    Searches recursively and accepts PNG/JPG/JPEG (any case).
+    """
+    circle_dir = _expand_path(circle_dir)
+    exts = ["png", "jpg", "jpeg", "PNG", "JPG", "JPEG"]
+    if mask_files is None:
+        mask_files = _list_files_recursive(circle_dir, exts)
+
+    base = os.path.basename(img_name)
+    stem, _ = os.path.splitext(base)
+    cand_exact = base.replace("-noCircles", "-mask")
+    stem_mask = stem.replace("-noCircles", "-mask")
+    stem_l = stem.lower()
+
+    # 1) Exact basename match
+    for p in mask_files:
+        if os.path.basename(p) == cand_exact:
+            return p
+
+    # 2) Same stem (any extension)
+    for p in mask_files:
+        if os.path.splitext(os.path.basename(p))[0] == stem:
+            return p
+
+    # 3) Stem with '-mask' replacement
+    for p in mask_files:
+        if os.path.splitext(os.path.basename(p))[0] == stem_mask:
+            return p
+
+    # 4) Startswith stem and contains mask/circle
+    for p in mask_files:
+        bn = os.path.basename(p)
+        bn_l = bn.lower()
+        if bn_l.startswith(stem_l) and ("mask" in bn_l or "circle" in bn_l):
+            return p
+
+    # 5) Fallback: contains stem and mask/circle anywhere
+    for p in mask_files:
+        bn_l = os.path.basename(p).lower()
+        if stem_l in bn_l and ("mask" in bn_l or "circle" in bn_l):
+            return p
+
     return None
 
 
 def get_image_pairs(image_dir: str, circle_dir: str) -> List[Tuple[str, str]]:
-    images = glob.glob(os.path.join(image_dir, "*.png")) + glob.glob(os.path.join(image_dir, "*.jpg")) + glob.glob(os.path.join(image_dir, "*.jpeg"))
+    image_dir = _expand_path(image_dir)
+    circle_dir = _expand_path(circle_dir)
+
+    exts = ["png", "jpg", "jpeg", "PNG", "JPG", "JPEG"]
+    images = _list_files_recursive(image_dir, exts)
+    mask_files = _list_files_recursive(circle_dir, exts)
+
     pairs: List[Tuple[str, str]] = []
     for img_path in sorted(images):
         img_name = os.path.basename(img_path)
-        circle_path = _match_circle_mask(circle_dir, img_name)
+        circle_path = _match_circle_mask(circle_dir, img_name, mask_files=mask_files)
         if circle_path and os.path.exists(circle_path):
             pairs.append((img_path, circle_path))
         else:

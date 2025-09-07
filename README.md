@@ -111,6 +111,25 @@ Stage 4 (full DINO unfreeze):
 python scripts/train.py --config configs/ham10000_voc_stage4.yaml data.root=/data/HAM10000_VOC
 ```
 
+Checkpointing and Epoch Evaluation
+
+- Checkpoint options under `checkpoint`:
+  - `save_best: true` — keep `best.pt` (lowest training loss)
+  - `save_latest: true` — keep `latest.pt` after each epoch
+  - `keep_per_epoch: false` — set `true` to also keep `epoch_{N}.pt`
+- Optional dual-circle eval after each epoch:
+  - In config, set:
+    ```yaml
+    eval:
+      dual_circle:
+        enable: true
+        image_dir: /path/to/no_circle_images
+        circle_dir: /path/to/circle_masks
+        # output_dir: /path/to/save/per-epoch/csv  # optional
+        # text: "bruise"                           # optional, defaults to data.text
+    ```
+  - The trainer will print metrics (precision/recall/F1/accuracy) each epoch and write a CSV per epoch if `output_dir` is set.
+
 - Notes on preparation:
   - Convert lesion masks to PNG with values 0 (background) and 255 (lesion). The loader converts them to binary tensors.
   - If you don’t provide `ImageSets/Segmentation/train.txt`, the loader uses all images in `JPEGImages`.

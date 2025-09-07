@@ -17,12 +17,14 @@ from .models import (
 from .lora import inject_lora_linear, set_trainable, enable_only_lora
 from .data import ImageMaskDataset, VOCSegDataset
 from .losses import seg_loss, clip_align_loss, ssl_stub_loss
+from .eval import evaluate_dual_circle_dataset
 
 
 class Trainer:
     def __init__(self, cfg: Dict):
         self.cfg = cfg
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.best_loss: Optional[float] = None
         self._build_model()
         self._build_data()
         self._build_optim()
@@ -153,8 +155,8 @@ class Trainer:
     def run(self):
         epochs = self.cfg.get("epochs", 1)
         print(f"Using device: {self.device}")
-        self.model.train()
         for epoch in range(1, epochs + 1):
+            self.model.train()
             total_loss = 0.0
             for batch in self.train_loader:
                 images = batch["image"].to(self.device)
@@ -169,25 +171,112 @@ class Trainer:
                 total_loss += loss.item()
             avg = total_loss / max(1, len(self.train_loader))
             print(f"Epoch {epoch}: loss={avg:.4f}")
-            self._save_checkpoint(epoch)
+            self._save_checkpoint(epoch, avg)
 
-    def _save_checkpoint(self, epoch: int):
+            # Optional dual-circle evaluation each epoch
+            self._maybe_eval_epoch(epoch)
+            # Restore train mode for next epoch after eval switches to eval() internally
+            self.model.train()
+
+    def _save_checkpoint(self, epoch: int, avg_loss: float):
+        """Save only 'latest.pt' and optionally 'best.pt' (lowest loss), unless keep_per_epoch is enabled."""
         ckpt_cfg = self.cfg.get("checkpoint", {})
         out_root = self.cfg.get("output", {}).get("dir")
         # Priority: explicit checkpoint.dir > output.dir/checkpoints > ./checkpoints
         out_dir = ckpt_cfg.get("dir") or (os.path.join(out_root, "checkpoints") if out_root else "checkpoints")
         os.makedirs(out_dir, exist_ok=True)
+
         state = {
             "epoch": epoch,
             "model": self.model.state_dict(),
             "optimizer": self.optimizer.state_dict(),
             "cfg": self.cfg,
+            "train_loss": avg_loss,
         }
-        path = os.path.join(out_dir, f"epoch_{epoch}.pt")
-        latest = os.path.join(out_dir, "latest.pt")
-        try:
-            import torch
-            torch.save(state, path)
-            torch.save(state, latest)
-        except Exception as e:
-            print(f"Warning: failed to save checkpoint: {e}")
+
+        keep_per_epoch = ckpt_cfg.get("keep_per_epoch", False)
+        save_best = ckpt_cfg.get("save_best", True)
+        save_latest = ckpt_cfg.get("save_latest", True)
+
+        if keep_per_epoch:
+            path = os.path.join(out_dir, f"epoch_{epoch}.pt")
+            try:
+                torch.save(state, path)
+            except Exception as e:
+                print(f"Warning: failed to save per-epoch checkpoint: {e}")
+
+        if save_latest:
+            latest = os.path.join(out_dir, "latest.pt")
+            try:
+                torch.save(state, latest)
+            except Exception as e:
+                print(f"Warning: failed to save latest checkpoint: {e}")
+
+        if save_best:
+            is_best = self.best_loss is None or avg_loss < self.best_loss
+            if is_best:
+                self.best_loss = avg_loss
+                best = os.path.join(out_dir, "best.pt")
+                try:
+                    torch.save(state, best)
+                    print(f"New best (loss={avg_loss:.4f}) saved to {best}")
+                except Exception as e:
+                    print(f"Warning: failed to save best checkpoint: {e}")
+
+    def _maybe_eval_epoch(self, epoch: int):
+        """Optionally run dual-circle evaluation after each epoch and print summary metrics."""
+        ecfg = self.cfg.get("eval", {}).get("dual_circle", {})
+        if not ecfg or not ecfg.get("enable", False):
+            return
+        image_dir = ecfg.get("image_dir")
+        circle_dir = ecfg.get("circle_dir")
+        if not image_dir or not circle_dir:
+            print("Eval skipped: eval.dual_circle.image_dir or circle_dir not set")
+            return
+        # Determine output path for per-epoch CSV if requested
+        out_root = self.cfg.get("output", {}).get("dir")
+        eval_out_dir = ecfg.get("output_dir") or (os.path.join(out_root, "eval") if out_root else None)
+        if eval_out_dir:
+            os.makedirs(eval_out_dir, exist_ok=True)
+            csv_path = os.path.join(eval_out_dir, f"epoch_{epoch}.csv")
+        else:
+            csv_path = None
+
+        data_cfg = self.cfg.get("data", {})
+        text_prompt = ecfg.get("text", data_cfg.get("text"))
+        input_size = int(data_cfg.get("crop", 224))
+
+        # Switch to eval inside the evaluation utility, then back to train.
+        metrics = evaluate_dual_circle_dataset(
+            model=self.model,
+            image_dir=image_dir,
+            circle_dir=circle_dir,
+            device=self.device,
+            text_prompt=text_prompt,
+            output_csv=csv_path,
+            visualize_samples=False,
+            vis_output_dir=None,
+            visualize_specific=None,
+            input_size=input_size,
+        )
+        if metrics:
+            print("\n" + "=" * 60)
+            print(f"EPOCH {epoch} — DUAL-CIRCLE EVALUATION")
+            print("=" * 60)
+            print(f"Images processed: {metrics['num_images']}")
+            print(f"Overall Precision: {metrics['overall_precision']:.4f}")
+            print(f"Overall Recall:    {metrics['overall_recall']:.4f}")
+            print(f"Overall F1 Score:  {metrics['overall_f1']:.4f}")
+            print(f"Overall Accuracy:  {metrics['overall_accuracy']:.4f}")
+            print()
+            print("Confusion Matrix (aggregated):")
+            print(f"  True Positives:  {metrics['total_tp']:,}")
+            print(f"  False Positives: {metrics['total_fp']:,}")
+            print(f"  True Negatives:  {metrics['total_tn']:,}")
+            print(f"  False Negatives: {metrics['total_fn']:,}")
+            print(f"  Ignored Pixels:  {metrics['total_ignored']:,}")
+            print()
+            print("Per-Image Averages:")
+            print(f"  Mean TP %: {metrics['mean_tp_percentage']:.2f}%")
+            print(f"  Mean FP %: {metrics['mean_fp_percentage']:.2f}%")
+            print(f"  Mean F1  : {metrics['mean_f1_score']:.4f} (±{metrics['std_f1_score']:.4f})")

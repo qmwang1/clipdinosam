@@ -19,7 +19,7 @@ data:
   num_workers: 4
 
 optim:
-  batch_size: 4
+  batch_size: 32
   lr: 2.0e-5         # lower LR for full DINO unfreeze
   lora_lr: 3.0e-4     # still used for SAM LoRA if enabled
   wd: 1.0e-4
@@ -28,7 +28,7 @@ loss:
   clip_align_weight: 0.1
   ssl_weight: 0.05
 
-epochs: 50
+epochs: 150
 
 lora:
   sam:
