@@ -128,9 +128,7 @@ Practical guidance:
 
 ## 11. CLIP as Instruction Signal for DINO
 
-Motivation. Text conveys high‑level semantic intent that may not be fully captured by mask supervision alone (e.g., ambiguous boundaries, class imbalance, or weak labels). Leveraging CLIP’s text space provides a compact, compositional prior that can steer visual features toward concepts expressed in natural language (open‑vocabulary behavior) while preserving sample efficiency.
-
-Mechanism of guidance. During training, we map DINO patch tokens into CLIP’s text width via `TokenProjection` and apply a symmetric contrastive alignment objective against the CLIP text embedding(s) of the prompt. Let `z_i ∈ R^D` denote the pooled, ℓ2‑normalized image representation (mean over tokens after projection) for image i, and `t_j ∈ R^D` the ℓ2‑normalized text embedding for prompt j. The loss is
+During training, we map DINO patch tokens into CLIP’s text width via `TokenProjection` and apply a symmetric contrastive alignment objective against the CLIP text embedding(s) of the prompt. Let `z_i ∈ R^D` denote the pooled, ℓ2‑normalized image representation (mean over tokens after projection) for image i, and `t_j ∈ R^D` the ℓ2‑normalized text embedding for prompt j. The loss is
 
 L_clip = 1/2 [ CE(softmax(z_i^T t_j / τ), y_i) + CE(softmax(t_j^T z_i / τ), y_j) ],
 
