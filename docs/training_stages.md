@@ -152,3 +152,26 @@ Practical usage.
 - Weighting: set `loss.clip_align_weight` (e.g., 0.05–0.1 in the provided configs) to trade off segmentation supervision and language guidance. Too large a weight can over‑constrain features toward text similarity at the expense of precise boundaries.
 - Prompting: use clear, domain‑appropriate prompts; consider prompt ensembling or templates (e.g., “a photo of a {class}”).
 - When to tune CLIP: only consider LoRA/low‑LR unfreeze after Stage 4 if performance saturates and you have sufficient data; otherwise prefer keeping CLIP fixed to avoid drifting the language prior.
+
+## 12. How CLIP Alignment Helps Training (Summary)
+
+- Semantic regularizer: anchors DINO features toward the prompt concept (e.g., “bruise”), counteracting drift under domain shift or few labels.
+- Improves separability: encourages a feature geometry that distinguishes the target concept from background, indirectly aiding SAM’s decoder.
+- Few‑label robustness: supplies a weak, global supervision signal that complements noisy/sparse masks.
+- LoRA synergy: provides a direction that low‑rank updates can capture efficiently, improving sample efficiency in Stages 2–3.
+
+Nuances.
+- Global, not spatial: mean‑pooled token alignment applies a global pull; precise localization still comes from the segmentation loss.
+- Gradient destinations: CLIP stays frozen; gradients flow into `TokenProjection` and the trainable DINO pathway (LoRA or full, per stage).
+
+## 13. Diagnostics and Scheduling Tips
+
+- Keep balance: monitor the magnitude of `clip` vs `seg` loss; the alignment term should remain clearly smaller (e.g., <10–30% of total).
+- Track similarity: log cosine similarity between pooled image features and text; it should trend upward across epochs.
+- Watch for bias: if masks bleed into background (over‑segmentation), reduce `clip_align_weight`.
+- Weight range: typical effective range 0.02–0.10; common default 0.05.
+- Optional ramp: start at 0 and linearly ramp to target weight over 1–3 epochs (requires a small scheduler hook in the trainer).
+- Multi‑prompt robustness: average synonyms (e.g., ["bruise", "contusion"]) to stabilize text features when available.
+
+Inference behavior reminder.
+- In the current repository, inference masks are produced by `image → DINO → SAM`. Text/CLIP does not influence masks at inference unless you add a text‑guided prompting step.

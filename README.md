@@ -75,6 +75,7 @@ Repo Layout
 - `configs/`: example YAML configs per stage.
 - `scripts/train.py`: CLI entrypoint.
 - `scripts/eval_dual_circle.py`: dual-circle evaluation CLI.
+- `scripts/eval_voc.py`: VOC-style evaluation CLI (e.g., HAM10000 test split).
 
 Stages Overview
 
@@ -110,6 +111,41 @@ Stage 4 (full DINO unfreeze):
 ```
 python scripts/train.py --config configs/ham10000_voc_stage4.yaml data.root=/data/HAM10000_VOC
 ```
+
+VOC-Style Evaluation (Test Split)
+
+- Evaluate a trained checkpoint on a VOC-style dataset split (e.g., HAM10000 `test.txt`). Computes IoU, Dice, accuracy, precision, recall, and F1. Optionally writes per-image metrics CSV and saves predicted masks.
+
+Basic usage:
+```
+python scripts/eval_voc.py \
+  --config configs/ham10000_voc_stage4.yaml \
+  --checkpoint experiments/runA/checkpoints/best.pt \
+  --root /data/HAM10000_VOC \
+  --split test \
+  --output_csv experiments/runA/test_metrics.csv
+```
+
+Save predicted masks (PNG):
+```
+python scripts/eval_voc.py \
+  --config configs/ham10000_voc_stage4.yaml \
+  --checkpoint experiments/runA/checkpoints/best.pt \
+  --root /data/HAM10000_VOC \
+  --split test \
+  --save_preds experiments/runA/test_preds
+```
+
+Options and notes:
+- `--split` can be `train`, `val`, `test`, or a path to a custom list file. Expects `ImageSets/Segmentation/{split}.txt` by default.
+- Directory layout under `--root`:
+  - `JPEGImages/{id}.jpg` or `.png`
+  - `SegmentationClass/{id}.png` (binary mask; background=0, lesion>0)
+  - `ImageSets/Segmentation/test.txt` (one id per line)
+- Threshold defaults to `0.5` (override with `--threshold 0.45`).
+- Uses the same Resize+CenterCrop+Normalize transforms as training (`cfg.data.resize`, `cfg.data.crop`).
+- Prompt defaults to `cfg.data.text` (override with `--text "skin lesion"`).
+- If your folder names differ, use `--image_dir`/`--mask_dir` to override.
 
 Checkpointing and Epoch Evaluation
 
