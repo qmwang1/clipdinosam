@@ -8,3 +8,5 @@ opencv-python
 pandas
 tqdm
 matplotlib
+hydra-core
+omegaconf

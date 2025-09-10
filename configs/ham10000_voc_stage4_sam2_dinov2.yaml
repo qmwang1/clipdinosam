@@ -1,0 +1,51 @@
+stage: 4
+
+model:
+  dino:
+    # Use DINOv2 via timm or hub (examples)
+    # name: vit_base_patch16_224.dino
+    name: vit_large_patch14_dinov2.lvd142m
+  clip:
+    name: ViT-L-14
+  sam:
+    # SAM2 variant: provide both config and checkpoint
+    type: sam2_hiera_large
+    config: /home/qiming/Documents/PyTorchProjects/clipdinosam/checkpoints/sam2/sam2_hiera_large.yaml
+    checkpoint: /home/qiming/Documents/PyTorchProjects/clipdinosam/checkpoints/sam2/sam2_hiera_large.pt
+
+data:
+  format: voc
+  root: /path/to/HAM10000_VOC
+  split: train
+  binary: true
+  text: "skin lesion"
+  resize: 256
+  crop: 224
+  num_workers: 4
+
+optim:
+  batch_size: 32
+  lr: 2.0e-5
+  lora_lr: 3.0e-4
+  wd: 1.0e-4
+
+loss:
+  clip_align_weight: 0.1
+  ssl_weight: 0.05
+
+epochs: 150
+
+lora:
+  sam:
+    enable: true
+    rank: 8
+    alpha: 8
+    dropout: 0.0
+    targets: ["attn", "mlp", "proj", "lin"]
+  dino:
+    enable: false
+    last_k_blocks: 8
+    rank: 16
+    alpha: 16
+    dropout: 0.0
+

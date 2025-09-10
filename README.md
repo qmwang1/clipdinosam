@@ -31,7 +31,7 @@ Quick Start
 # minimal set
 pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
 pip install timm open-clip-torch pyyaml
-# For SAM (only mask decoder + prompt encoder used)
+# For SAM (mask decoder + prompt encoder)
 pip install git+https://github.com/facebookresearch/segment-anything.git
 ```
 
@@ -69,13 +69,46 @@ Repo Layout
   - `lora.py`: LoRA modules and injection helpers.
   - `losses.py`: Dice, BCE, optional contrastive and SSL stubs.
   - `data/`: simple image(+mask) dataset.
-  - `eval/`: dual-circle evaluation utilities (inner/annulus/outer regions).
-  - `trainer.py`: staged trainer to match the plan.
-  - `config.py`: lightweight config loader with overrides.
+- `eval/`: dual-circle evaluation utilities (inner/annulus/outer regions).
+- `trainer.py`: staged trainer to match the plan.
+- `config.py`: lightweight config loader with overrides.
 - `configs/`: example YAML configs per stage.
 - `scripts/train.py`: CLI entrypoint.
 - `scripts/eval_dual_circle.py`: dual-circle evaluation CLI.
 - `scripts/eval_voc.py`: VOC-style evaluation CLI (e.g., HAM10000 test split).
+- `scripts/sam_encode.py`: export SAM image embeddings for a folder or list.
+
+Backbones
+
+- DINO (timm): use names like `vit_base_patch16_224.dino`.
+- DINOv2 (timm or hub): use timm names like `vit_large_patch14_dinov2.lvd142m`, or any name containing `dinov2` (the code will also try the official hub variants: `dinov2_vits14`, `dinov2_vitb14`, `dinov2_vitl14`, `dinov2_vitg14`). Ensure the model is available in your environment (timm or torch.hub cache).
+
+SAM Variants
+
+- SAM: set `model.sam.type` in {`vit_t`, `vit_b`, `vit_l`, `vit_h`} and optionally `model.sam.checkpoint` to a `.pth`.
+
+SAM Encoder Export
+
+- Compute and save SAM image embeddings for a directory (recursively) or a text file list.
+
+Example:
+```
+python scripts/sam_encode.py \
+  --sam_type vit_b \
+  --checkpoint /path/to/sam_vit_b.pth \
+  --input_dir /data/images \
+  --output_dir /data/sam_embeddings \
+  --format pt
+```
+Or from a list of image paths:
+```
+python scripts/sam_encode.py \
+  --sam_type vit_b \
+  --checkpoint /path/to/sam_vit_b.pth \
+  --list_file paths.txt \
+  --output_dir /data/sam_embeddings
+```
+Outputs are one file per input image (same stem) storing the embedding tensor.
 
 Stages Overview
 

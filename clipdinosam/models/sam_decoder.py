@@ -163,3 +163,4 @@ def build_sam_decoder(
     pe = sam.prompt_encoder
     md = sam.mask_decoder
     return SAMDecoderWrapper(pe, md, image_embedding_channels=256)
+

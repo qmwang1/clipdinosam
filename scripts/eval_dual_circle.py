@@ -12,6 +12,7 @@ from clipdinosam.models import (
     TokenToMaskEmbedding,
     CLIPDinoSam,
 )
+from clipdinosam.models.sam2_decoder import build_sam2_decoder
 from clipdinosam.eval import evaluate_dual_circle_dataset
 from clipdinosam.lora import inject_lora_linear, set_trainable, enable_only_lora
 
@@ -20,7 +21,15 @@ def build_model_from_cfg(cfg, device: torch.device) -> CLIPDinoSam:
     mcfg = cfg["model"]
     dino = build_dino(mcfg["dino"]["name"], pretrained=True)
     clip_text = build_clip_text(mcfg["clip"]["name"], pretrained=mcfg["clip"].get("pretrained", "openai"))
-    sam = build_sam_decoder(mcfg["sam"]["type"], checkpoint=mcfg["sam"].get("checkpoint"))
+    sam_type = mcfg["sam"]["type"]
+    if isinstance(sam_type, str) and "sam2" in sam_type.lower():
+        sam = build_sam2_decoder(
+            sam_type=sam_type,
+            config=mcfg["sam"].get("config"),
+            checkpoint=mcfg["sam"].get("checkpoint"),
+        )
+    else:
+        sam = build_sam_decoder(sam_type, checkpoint=mcfg["sam"].get("checkpoint"))
 
     token_to_text = TokenProjection(in_dim=dino.embed_dim, out_dim=mcfg["clip"].get("width", clip_text.width))
     token_to_mask = TokenToMaskEmbedding(in_dim=dino.embed_dim, embed_dim=mcfg["sam"].get("embed_dim", 256))
