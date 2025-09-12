@@ -221,3 +221,25 @@ python scripts/eval_dual_circle.py \
 ```
 
 - The script pairs files by replacing "-noCircles" with "-mask" and falls back to matching by stem (PNG). It computes TP in inner region, ignores the annulus, and counts FP in background (outer ring + beyond). Optional `--text` overrides the prompt from config.
+
+Multi‑GPU Training
+
+- DataParallel (single process): enable by config and run normally.
+  - In your YAML, set `distributed.use_data_parallel: true` to wrap the model in `nn.DataParallel` when multiple GPUs are visible.
+  - Example run: `CUDA_VISIBLE_DEVICES=0,1 python scripts/train.py --config configs/stage2.yaml data.root=/data/HAM10000_VOC`
+  - Note: DP splits the batch across GPUs but does not reduce per‑sample memory.
+
+- DistributedDataParallel (recommended): launch one process per GPU via torchrun.
+  - Example: `torchrun --standalone --nproc_per_node=2 scripts/train.py --config configs/stage2.yaml data.root=/data/HAM10000_VOC`
+  - The trainer automatically initializes NCCL, uses a `DistributedSampler`, synchronizes epochs, and saves checkpoints only on rank 0.
+  - Continue to pass overrides the same way; each rank receives the same config.
+
+Mixed Precision
+
+- AMP is enabled by default on CUDA. It uses bf16 when supported, otherwise fp16 with GradScaler.
+- You can control it via config:
+  ```yaml
+  optim:
+    amp: true        # or false to disable
+    amp_dtype: bf16  # or fp16
+  ```

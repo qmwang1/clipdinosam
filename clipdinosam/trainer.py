@@ -3,7 +3,10 @@ import os
 
 import torch
 import torch.nn as nn
+import torch.distributed as dist
+from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.utils.data import DataLoader
+from torch.utils.data.distributed import DistributedSampler
 from torchvision import transforms
 
 from .models import (
@@ -24,7 +27,34 @@ from .eval import evaluate_dual_circle_dataset
 class Trainer:
     def __init__(self, cfg: Dict):
         self.cfg = cfg
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        # Distributed setup
+        self.distributed = False
+        self.rank = 0
+        self.world_size = 1
+        if torch.cuda.is_available() and ("RANK" in os.environ and "WORLD_SIZE" in os.environ):
+            self.distributed = True
+            self.rank = int(os.environ.get("RANK", 0))
+            self.world_size = int(os.environ.get("WORLD_SIZE", 1))
+            local_rank = int(os.environ.get("LOCAL_RANK", 0))
+            torch.cuda.set_device(local_rank)
+            dist.init_process_group(backend="nccl", init_method="env://")
+            self.device = torch.device(f"cuda:{local_rank}")
+        else:
+            self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+        # AMP configuration
+        ocfg = cfg.get("optim", {})
+        self.amp_enabled = bool(ocfg.get("amp", True)) and self.device.type == "cuda"
+        amp_dtype_cfg = ocfg.get("amp_dtype")
+        if self.amp_enabled:
+            if amp_dtype_cfg is None:
+                # Default to bf16 if supported, otherwise fp16
+                amp_dtype_cfg = "bf16" if torch.cuda.is_bf16_supported() else "fp16"
+            self.amp_dtype = torch.bfloat16 if str(amp_dtype_cfg).lower() == "bf16" else torch.float16
+        else:
+            self.amp_dtype = None
+        self.scaler = torch.cuda.amp.GradScaler() if (self.amp_enabled and self.amp_dtype == torch.float16) else None
+
         self.best_loss: Optional[float] = None
         self._build_model()
         self._build_data()
@@ -95,6 +125,19 @@ class Trainer:
         # Move entire model to the desired device AFTER LoRA injection so LoRA params move too
         self.model = self.model.to(self.device)
 
+        # Wrap with DDP or optionally DP
+        if self.distributed:
+            self.model = DDP(
+                self.model,
+                device_ids=[self.device.index],
+                output_device=self.device.index,
+                find_unused_parameters=False,
+            )
+        else:
+            dp_flag = self.cfg.get("distributed", {}).get("use_data_parallel", False)
+            if dp_flag and torch.cuda.device_count() > 1 and self.device.type == "cuda":
+                self.model = torch.nn.DataParallel(self.model)
+
     def _build_data(self):
         dcfg = self.cfg["data"]
         tfm = transforms.Compose([
@@ -123,7 +166,15 @@ class Trainer:
             self.train_set = ImageMaskDataset(
                 root=dcfg["root"], masks=dcfg.get("masks"), transform=tfm, mask_transform=m_tfm, text_prompt=dcfg.get("text")
             )
-        self.train_loader = DataLoader(self.train_set, batch_size=self.cfg["optim"].get("batch_size", 8), shuffle=True, num_workers=dcfg.get("num_workers", 4))
+        sampler = DistributedSampler(self.train_set, shuffle=True) if self.distributed else None
+        self.train_loader = DataLoader(
+            self.train_set,
+            batch_size=self.cfg["optim"].get("batch_size", 8),
+            shuffle=(sampler is None),
+            num_workers=dcfg.get("num_workers", 4),
+            sampler=sampler,
+            pin_memory=(self.device.type == "cuda"),
+        )
 
     def _build_optim(self):
         ocfg = self.cfg["optim"]
@@ -164,29 +215,55 @@ class Trainer:
 
     def run(self):
         epochs = self.cfg.get("epochs", 1)
-        print(f"Using device: {self.device}")
+        if (not self.distributed) or self.rank == 0:
+            print(f"Using device: {self.device}; distributed={self.distributed}; world_size={self.world_size}")
         for epoch in range(1, epochs + 1):
+            # Ensure distinct shuffling per epoch under DDP
+            if self.distributed and isinstance(self.train_loader.sampler, DistributedSampler):
+                self.train_loader.sampler.set_epoch(epoch)
             self.model.train()
             total_loss = 0.0
             for batch in self.train_loader:
-                images = batch["image"].to(self.device)
+                images = batch["image"].to(self.device, non_blocking=True)
                 texts = None
                 if batch.get("text"):
                     texts = [batch["text"]] if isinstance(batch["text"], str) else batch["text"]
-                out = self.model(images, texts=texts)
-                loss = self._compute_losses(batch, out)
-                self.optimizer.zero_grad()
-                loss.backward()
-                self.optimizer.step()
+                if self.amp_dtype is not None:
+                    with torch.cuda.amp.autocast(dtype=self.amp_dtype):
+                        out = self.model(images, texts=texts)
+                        loss = self._compute_losses(batch, out)
+                else:
+                    out = self.model(images, texts=texts)
+                    loss = self._compute_losses(batch, out)
+
+                self.optimizer.zero_grad(set_to_none=True)
+                if self.scaler is not None:
+                    self.scaler.scale(loss).backward()
+                    self.scaler.step(self.optimizer)
+                    self.scaler.update()
+                else:
+                    loss.backward()
+                    self.optimizer.step()
                 total_loss += loss.item()
             avg = total_loss / max(1, len(self.train_loader))
-            print(f"Epoch {epoch}: loss={avg:.4f}")
-            self._save_checkpoint(epoch, avg)
+            if (not self.distributed) or self.rank == 0:
+                print(f"Epoch {epoch}: loss={avg:.4f}")
+                self._save_checkpoint(epoch, avg)
 
             # Optional dual-circle evaluation each epoch
             self._maybe_eval_epoch(epoch)
             # Restore train mode for next epoch after eval switches to eval() internally
             self.model.train()
+        # Graceful DDP teardown
+        if self.distributed:
+            try:
+                dist.barrier()
+            except Exception:
+                pass
+            try:
+                dist.destroy_process_group()
+            except Exception:
+                pass
 
     def _save_checkpoint(self, epoch: int, avg_loss: float):
         """Save only 'latest.pt' and optionally 'best.pt' (lowest loss), unless keep_per_epoch is enabled."""
@@ -196,9 +273,10 @@ class Trainer:
         out_dir = ckpt_cfg.get("dir") or (os.path.join(out_root, "checkpoints") if out_root else "checkpoints")
         os.makedirs(out_dir, exist_ok=True)
 
+        model_to_save = self.model.module if hasattr(self.model, "module") else self.model
         state = {
             "epoch": epoch,
-            "model": self.model.state_dict(),
+            "model": model_to_save.state_dict(),
             "optimizer": self.optimizer.state_dict(),
             "cfg": self.cfg,
             "train_loss": avg_loss,
@@ -235,6 +313,9 @@ class Trainer:
 
     def _maybe_eval_epoch(self, epoch: int):
         """Optionally run dual-circle evaluation after each epoch and print summary metrics."""
+        # Only perform evaluation on main process
+        if self.distributed and self.rank != 0:
+            return
         ecfg = self.cfg.get("eval", {}).get("dual_circle", {})
         if not ecfg or not ecfg.get("enable", False):
             return
