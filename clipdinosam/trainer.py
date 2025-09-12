@@ -131,7 +131,7 @@ class Trainer:
                 self.model,
                 device_ids=[self.device.index],
                 output_device=self.device.index,
-                find_unused_parameters=False,
+                find_unused_parameters=True,
             )
         else:
             dp_flag = self.cfg.get("distributed", {}).get("use_data_parallel", False)
@@ -229,7 +229,7 @@ class Trainer:
                 if batch.get("text"):
                     texts = [batch["text"]] if isinstance(batch["text"], str) else batch["text"]
                 if self.amp_dtype is not None:
-                    with torch.cuda.amp.autocast(dtype=self.amp_dtype):
+                    with torch.amp.autocast("cuda", dtype=self.amp_dtype):
                         out = self.model(images, texts=texts)
                         loss = self._compute_losses(batch, out)
                 else:
