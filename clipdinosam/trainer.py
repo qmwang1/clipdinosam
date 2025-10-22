@@ -5,7 +5,7 @@ import torch
 import torch.nn as nn
 import torch.distributed as dist
 from torch.nn.parallel import DistributedDataParallel as DDP
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, default_collate
 from torch.utils.data.distributed import DistributedSampler
 from torchvision import transforms
 
@@ -321,6 +321,7 @@ class Trainer:
             return
         image_dir = ecfg.get("image_dir")
         circle_dir = ecfg.get("circle_dir")
+        rect_dir = ecfg.get("ignore_rect_dir") or ecfg.get("rectangle_dir")
         if not image_dir or not circle_dir:
             print("Eval skipped: eval.dual_circle.image_dir or circle_dir not set")
             return
@@ -342,6 +343,7 @@ class Trainer:
             model=self.model,
             image_dir=image_dir,
             circle_dir=circle_dir,
+            rectangle_dir=rect_dir,
             device=self.device,
             text_prompt=text_prompt,
             output_csv=csv_path,

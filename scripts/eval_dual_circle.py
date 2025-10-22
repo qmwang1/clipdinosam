@@ -87,6 +87,7 @@ def main():
     parser.add_argument("--checkpoint", type=str, required=True, help="Path to trained checkpoint (.pt)")
     parser.add_argument("--image_dir", type=str, required=True, help="Directory of images without circles")
     parser.add_argument("--circle_dir", type=str, required=True, help="Directory of dual-circle annotation masks")
+    parser.add_argument("--ignore_rect_dir", type=str, default=None, help="Optional directory of additional ignore masks (white=ignore)")
     parser.add_argument("--output_csv", type=str, default="dual_circle_results.csv", help="Where to write per-image results CSV")
     parser.add_argument("--text", type=str, default=None, help="Optional text prompt (defaults to cfg.data.text if unset)")
     parser.add_argument("--visualize", action="store_true", help="Save sample visualizations")
@@ -117,11 +118,14 @@ def main():
     print("Starting dual-circle evaluation ...")
     print(f"Image dir: {args.image_dir}")
     print(f"Circle dir: {args.circle_dir}")
+    if args.ignore_rect_dir:
+        print(f"Ignore-rect dir: {args.ignore_rect_dir}")
 
     metrics = evaluate_dual_circle_dataset(
         model=model,
         image_dir=args.image_dir,
         circle_dir=args.circle_dir,
+        rectangle_dir=args.ignore_rect_dir,
         device=device,
         text_prompt=text_prompt,
         output_csv=args.output_csv,
@@ -147,6 +151,8 @@ def main():
         print(f"  True Negatives:  {metrics['total_tn']:,}")
         print(f"  False Negatives: {metrics['total_fn']:,}")
         print(f"  Ignored Pixels:  {metrics['total_ignored']:,}")
+        print(f"  Ignore Area Px:  {metrics['total_ignore_pixels']:,}")
+        print(f"  Extra Ignore Px: {metrics['total_additional_ignore_pixels']:,}")
         print()
         print("Per-Image Averages:")
         print(f"  Mean TP %: {metrics['mean_tp_percentage']:.2f}%")

@@ -76,5 +76,5 @@ eval:
     enable: false
     # image_dir: /path/to/no_circle_images
     # circle_dir: /path/to/circle_masks
+    # ignore_rect_dir: /path/to/extra_ignore_rectangles
     # output_dir: experiments/ham10000_sam2_dinov2_stage4_dualgpu/eval/dual_circle_results.csv
-

@@ -9,9 +9,9 @@ model:
     name: ViT-L-14
   sam:
     # SAM2 variant: provide both config and checkpoint
-    type: sam2_hiera_small
-    config: checkpoints/sam2/sam2_hiera_s.yaml
-    checkpoint: checkpoints/sam2/sam2_hiera_small.pt
+    type: sam2_hiera_large
+    config: checkpoints/sam2/sam2_hiera_large.yaml
+    checkpoint: checkpoints/sam2/sam2_hiera_large.pt
 
 data:
   format: voc

@@ -33,6 +33,7 @@ class CLIPDinoSam(nn.Module):
         point_labels: Optional[torch.Tensor] = None,
         boxes: Optional[torch.Tensor] = None,
         multimask_output: bool = False,
+        skip_sam: bool = False,
     ) -> Dict[str, torch.Tensor]:
         tokens, hw = self.dino.forward_tokens(images)        # (B, N, C)
         clip_tokens = self.token_to_text(tokens)             # (B, N, clip_dim)
@@ -42,15 +43,24 @@ class CLIPDinoSam(nn.Module):
         if texts is not None:
             text_feats = self.clip_text.encode_texts(texts)  # (T, D)
 
-        low_res_masks, iou_preds = self.sam(
-            mask_embeddings, points=points, labels=point_labels, boxes=boxes, multimask_output=multimask_output
-        )
+        if skip_sam:
+            low_res_masks = None
+            iou_preds = None
+        else:
+            low_res_masks, iou_preds = self.sam(
+                mask_embeddings,
+                points=points,
+                labels=point_labels,
+                boxes=boxes,
+                multimask_output=multimask_output,
+            )
+
+        device = mask_embeddings.device
 
         return {
-            "low_res_masks": low_res_masks,  # (B, 1|3, h, w)
-            "iou_preds": iou_preds,          # (B, 1|3)
+            "low_res_masks": low_res_masks,  # (B, 1|3, h, w) or None when skip_sam=True
+            "iou_preds": iou_preds,          # (B, 1|3) or None when skip_sam=True
             "clip_tokens": clip_tokens,      # (B, N, D)
             "text_feats": text_feats,        # (T, D) or None
-            "grid_hw": torch.tensor(hw, device=low_res_masks.device),
+            "grid_hw": torch.tensor(hw, device=device),
         }
-

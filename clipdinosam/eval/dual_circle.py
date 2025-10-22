@@ -47,7 +47,11 @@ def extract_prediction_mask(pred_tensor: torch.Tensor | np.ndarray, threshold: f
     return (pred_tensor > threshold).astype(np.uint8)
 
 
-def evaluate_dual_circle_single_image(pred_mask: np.ndarray, annotation_image_bgr: np.ndarray) -> Optional[Dict]:
+def evaluate_dual_circle_single_image(
+    pred_mask: np.ndarray,
+    annotation_image_bgr: np.ndarray,
+    additional_ignore_mask: Optional[np.ndarray] = None,
+) -> Optional[Dict]:
     try:
         inner_region, annulus_region, outer_region = extract_dual_circle_regions_from_mask(annotation_image_bgr)
         if inner_region.shape != pred_mask.shape:
@@ -55,15 +59,34 @@ def evaluate_dual_circle_single_image(pred_mask: np.ndarray, annotation_image_bg
             annulus_region = cv2.resize(annulus_region.astype(np.uint8), pred_mask.shape[::-1], interpolation=cv2.INTER_NEAREST).astype(bool)
             outer_region = cv2.resize(outer_region.astype(np.uint8), pred_mask.shape[::-1], interpolation=cv2.INTER_NEAREST).astype(bool)
 
-        everything_else = ~(inner_region | annulus_region | outer_region)
-        background_region = outer_region | everything_else
+        if additional_ignore_mask is not None:
+            mask = additional_ignore_mask
+            if mask.ndim == 3:
+                mask = cv2.cvtColor(mask, cv2.COLOR_BGR2GRAY)
+            if mask.shape != pred_mask.shape:
+                mask = cv2.resize(mask.astype(np.uint8), pred_mask.shape[::-1], interpolation=cv2.INTER_NEAREST)
+            extra_ignore_region = (mask > 0)
+        else:
+            extra_ignore_region = np.zeros_like(inner_region, dtype=bool)
+
+        if extra_ignore_region.any():
+            # Ensure ignore regions do not overlap with evaluation regions
+            inner_region = inner_region & ~extra_ignore_region
+            annulus_region = annulus_region & ~extra_ignore_region
+            outer_region = outer_region & ~extra_ignore_region
+
+        everything_else = ~(inner_region | annulus_region | outer_region | extra_ignore_region)
+        ignore_region = annulus_region | extra_ignore_region
+        background_region = (outer_region | everything_else) & ~extra_ignore_region
 
         tp = int(pred_mask[inner_region].sum())
-        ignored = int(pred_mask[annulus_region].sum())
+        ignored = int(pred_mask[ignore_region].sum())
         fp = int(pred_mask[background_region].sum())
 
         total_inner = int(inner_region.sum())
         total_back = int(background_region.sum())
+        total_ignore = int(ignore_region.sum())
+        total_additional_ignore = int(extra_ignore_region.sum())
 
         fn = total_inner - tp
         tn = total_back - fp
@@ -86,6 +109,8 @@ def evaluate_dual_circle_single_image(pred_mask: np.ndarray, annotation_image_bg
             "ignored": ignored,
             "total_inner_pixels": total_inner,
             "total_background_pixels": total_back,
+            "total_ignore_pixels": total_ignore,
+            "total_additional_ignore_pixels": total_additional_ignore,
             "tp_percentage": tp_pct,
             "fp_percentage": fp_pct,
             "fn_percentage": fn_pct,
@@ -97,6 +122,7 @@ def evaluate_dual_circle_single_image(pred_mask: np.ndarray, annotation_image_bg
             "annulus_region": annulus_region,
             "outer_region": outer_region,
             "background_region": background_region,
+            "additional_ignore_region": extra_ignore_region,
         }
     except Exception as e:
         print(f"Error during dual-circle evaluation: {e}")
@@ -171,6 +197,66 @@ def _match_circle_mask(
     return None
 
 
+def _match_rectangle_ignore_mask(
+    rect_dir: Optional[str],
+    img_name: str,
+    mask_files: Optional[List[str]] = None,
+) -> Optional[str]:
+    """
+    Try to find an ignore-rectangle mask corresponding to the image.
+    Accepts masks whose names contain the image stem and 'rect'/'ignore'.
+    """
+    if not rect_dir:
+        return None
+    rect_dir = _expand_path(rect_dir)
+
+    exts = ["png", "jpg", "jpeg", "PNG", "JPG", "JPEG"]
+    if mask_files is None:
+        mask_files = _list_files_recursive(rect_dir, exts)
+
+    base = os.path.basename(img_name)
+    stem, _ = os.path.splitext(base)
+    stem_variants = {
+        stem,
+        stem.replace("-noCircles", ""),
+        stem.replace("-nocircles", ""),
+    }
+    candidates: List[str] = []
+    for s in stem_variants:
+        if not s:
+            continue
+        candidates.extend(
+            [
+                s,
+                f"{s}_blue_rect_mask",
+                f"{s}_blue_rect",
+                f"{s}_ignore_rect",
+                f"{s}_rect_ignore",
+                f"{s}_ignore",
+            ]
+        )
+
+    seen = set()
+    ordered_candidates = []
+    for c in candidates:
+        if c not in seen:
+            ordered_candidates.append(c)
+            seen.add(c)
+
+    for p in mask_files:
+        name, _ = os.path.splitext(os.path.basename(p))
+        if name in ordered_candidates:
+            return p
+
+    stem_l = stem.lower()
+    for p in mask_files:
+        bn_l = os.path.basename(p).lower()
+        if stem_l in bn_l and ("rect" in bn_l or "ignore" in bn_l):
+            return p
+
+    return None
+
+
 def get_image_pairs(image_dir: str, circle_dir: str) -> List[Tuple[str, str]]:
     image_dir = _expand_path(image_dir)
     circle_dir = _expand_path(circle_dir)
@@ -196,12 +282,18 @@ def visualize_dual_circle_evaluation_from_regions(
     inner_region: np.ndarray,
     annulus_region: np.ndarray,
     outer_region: np.ndarray,
+    additional_ignore_region: Optional[np.ndarray] = None,
     save_path: Optional[str] = None,
     alpha: float = 0.6,
 ):
     import matplotlib.pyplot as plt
 
-    background_region = ~(inner_region | annulus_region)
+    if additional_ignore_region is None:
+        additional_ignore_region = np.zeros_like(inner_region, dtype=bool)
+    else:
+        additional_ignore_region = additional_ignore_region.astype(bool)
+
+    background_region = ~(inner_region | annulus_region | additional_ignore_region)
 
     if isinstance(image, torch.Tensor):
         image = image.detach().cpu().numpy()
@@ -224,6 +316,7 @@ def visualize_dual_circle_evaluation_from_regions(
     region_overlay[inner_region] = [1, 0, 0, 0.3]
     region_overlay[annulus_region] = [1, 1, 0, 0.3]
     region_overlay[background_region] = [0, 0, 1, 0.3]
+    region_overlay[additional_ignore_region] = [0.6, 0, 0.6, 0.3]
     axes[0].imshow(region_overlay)
     axes[0].axis("off")
 
@@ -239,15 +332,16 @@ def visualize_dual_circle_evaluation_from_regions(
     region_masks[inner_region] = [1, 0, 0, 0.5]
     region_masks[annulus_region] = [1, 1, 0, 0.5]
     region_masks[background_region] = [0, 0, 1, 0.5]
+    region_masks[additional_ignore_region] = [0.6, 0, 0.6, 0.5]
     axes[2].imshow(region_masks)
-    axes[2].set_title("Region Definitions\n(Red=Inner, Yellow=Annulus, Blue=Outer)")
+    axes[2].set_title("Region Definitions\n(Red=Inner, Yellow=Annulus, Blue=Outer, Purple=Extra Ignore)")
     axes[2].axis("off")
 
     axes[3].imshow(image)
     evaluation_overlay = np.zeros(pred_mask.shape + (4,))
     tp_mask = (pred_mask > 0.5) & inner_region
     fp_mask = (pred_mask > 0.5) & background_region
-    ignored_mask = (pred_mask > 0.5) & annulus_region
+    ignored_mask = (pred_mask > 0.5) & (annulus_region | additional_ignore_region)
     evaluation_overlay[tp_mask] = [0, 1, 0, alpha]
     evaluation_overlay[fp_mask] = [1, 0, 0, alpha]
     evaluation_overlay[ignored_mask] = [1, 1, 0, alpha]
@@ -255,7 +349,6 @@ def visualize_dual_circle_evaluation_from_regions(
     axes[3].set_title("Evaluation Results\n(Green=TP, Red=FP, Yellow=Ignored)")
     axes[3].axis("off")
 
-    import matplotlib.pyplot as plt
     plt.tight_layout()
     if save_path:
         os.makedirs(os.path.dirname(save_path), exist_ok=True)
@@ -270,6 +363,7 @@ def evaluate_dual_circle_dataset(
     image_dir: str,
     circle_dir: str,
     device: torch.device,
+    rectangle_dir: Optional[str] = None,
     text_prompt: Optional[str] = None,
     output_csv: Optional[str] = None,
     visualize_samples: bool = False,
@@ -284,6 +378,14 @@ def evaluate_dual_circle_dataset(
     pairs = get_image_pairs(image_dir, circle_dir)
     print(f"Found {len(pairs)} image pairs to evaluate")
 
+    rect_dir_expanded = _expand_path(rectangle_dir) if rectangle_dir else None
+    rect_mask_files: Optional[List[str]] = None
+    if rect_dir_expanded:
+        rect_mask_files = _list_files_recursive(
+            rect_dir_expanded,
+            ["png", "jpg", "jpeg", "PNG", "JPG", "JPEG"],
+        )
+
     if visualize_samples and vis_output_dir:
         os.makedirs(vis_output_dir, exist_ok=True)
 
@@ -291,6 +393,7 @@ def evaluate_dual_circle_dataset(
 
     with torch.no_grad():
         for i, (img_path, circle_path) in enumerate(tqdm(pairs, desc="Evaluating")):
+            img_name = os.path.basename(img_path)
             image_bgr = cv2.imread(img_path)
             if image_bgr is None:
                 print(f"Warning: could not load image {img_path}")
@@ -336,13 +439,29 @@ def evaluate_dual_circle_dataset(
                 print(f"Warning: could not load circle annotation {circle_path}")
                 continue
 
-            res = evaluate_dual_circle_single_image(pred_mask, circle_bgr)
+            rect_mask = None
+            rect_path = None
+            if rect_dir_expanded:
+                rect_path = _match_rectangle_ignore_mask(rect_dir_expanded, img_name, mask_files=rect_mask_files)
+                if rect_path and os.path.exists(rect_path):
+                    rect_mask = cv2.imread(rect_path, cv2.IMREAD_GRAYSCALE)
+                    if rect_mask is None:
+                        print(f"Warning: could not load rectangle mask {rect_path}")
+                elif rect_path:
+                    print(f"Warning: rectangle mask path not found {rect_path}")
+
+            res = evaluate_dual_circle_single_image(
+                pred_mask=pred_mask,
+                annotation_image_bgr=circle_bgr,
+                additional_ignore_mask=rect_mask,
+            )
             if res is None:
                 continue
 
             res["image_name"] = os.path.basename(img_path)
             res["image_path"] = img_path
             res["circle_path"] = circle_path
+            res["ignore_rectangle_path"] = rect_path
             results.append(res)
 
             if visualize_samples and vis_output_dir:
@@ -362,6 +481,7 @@ def evaluate_dual_circle_dataset(
                             inner_region=res["inner_region"],
                             annulus_region=res["annulus_region"],
                             outer_region=res["outer_region"],
+                            additional_ignore_region=res["additional_ignore_region"],
                             save_path=out_path,
                         )
                     except Exception as e:
@@ -381,6 +501,8 @@ def evaluate_dual_circle_dataset(
     total_tn = df["true_negatives"].sum()
     total_fn = df["false_negatives"].sum()
     total_ig = df["ignored"].sum()
+    total_ignore_pixels = df["total_ignore_pixels"].sum()
+    total_additional_ignore_pixels = df["total_additional_ignore_pixels"].sum()
 
     overall_precision = total_tp / (total_tp + total_fp) if (total_tp + total_fp) > 0 else 0.0
     overall_recall = total_tp / (total_tp + total_fn) if (total_tp + total_fn) > 0 else 0.0
@@ -398,6 +520,8 @@ def evaluate_dual_circle_dataset(
         "total_tn": total_tn,
         "total_fn": total_fn,
         "total_ignored": total_ig,
+        "total_ignore_pixels": total_ignore_pixels,
+        "total_additional_ignore_pixels": total_additional_ignore_pixels,
         "num_images": len(results),
         "mean_tp_percentage": df["tp_percentage"].mean(),
         "mean_fp_percentage": df["fp_percentage"].mean(),

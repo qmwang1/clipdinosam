@@ -216,11 +216,12 @@ python scripts/eval_dual_circle.py \
   --checkpoint experiments/runA-stage3/checkpoints/latest.pt \
   --image_dir /path/to/no_circle_images \
   --circle_dir /path/to/circle_masks \
+  --ignore_rect_dir /path/to/ignore_rectangles \
   --output_csv results_dual_circle.csv \
   --visualize --vis_output_dir visualizations
 ```
 
-- The script pairs files by replacing "-noCircles" with "-mask" and falls back to matching by stem (PNG). It computes TP in inner region, ignores the annulus, and counts FP in background (outer ring + beyond). Optional `--text` overrides the prompt from config.
+- The script pairs files by replacing "-noCircles" with "-mask" and falls back to matching by stem (PNG). It computes TP in inner region, ignores the annulus (plus any optional rectangular ignore mask), and counts FP in background (outer ring + beyond). Optional `--text` overrides the prompt from config.
 
 Multi‑GPU Training
 
