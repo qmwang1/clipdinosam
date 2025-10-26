@@ -1,26 +1,26 @@
-CLIP-DINO-SAM with LoRA (staged fine-tuning)
+CLIP-DINO/Swin-SAM with LoRA (staged fine-tuning)
 
-This project wires together a DINO/DINOv2 vision backbone, a frozen CLIP text encoder, and the SAM mask decoder (using its prompt encoder) to produce text-aware segmentation masks. It includes LoRA adapters and a staged training plan to minimize drift while adapting to your domain.
+This project wires together an image backbone (DINO/DINOv2 or supervised Swin Transformer), a frozen CLIP text encoder, and the SAM mask decoder (using its prompt encoder) to produce text-aware segmentation masks. It includes LoRA adapters and a staged training plan to minimize drift while adapting to your domain.
 
 Stages
 
 - Stage 0 — Initialise
-  - Backbone: DINOv2 ViT-L/14 or B/16 (pretrained).
+  - Backbone: DINO/DINOv2 ViT (e.g., ViT-L/14, ViT-B/16) or a supervised Swin Transformer (e.g., Swin-B) from timm.
   - Text: CLIP text encoder (ViT-L/14, frozen).
-  - Seg head: SAM mask decoder + prompt encoder (pretrained), using DINO tokens as image embeddings via a light projection.
+  - Seg head: SAM mask decoder + prompt encoder (pretrained), using backbone tokens as image embeddings via a light projection.
 
 - Stage 1 — Get it working
-  - Freeze DINO & CLIP.
-  - Train: thin image projection head (DINO tokens → CLIP dim) and SAM mask decoder adapters.
+  - Freeze the vision backbone & CLIP.
+  - Train: thin image projection head (backbone tokens → CLIP dim) and SAM mask decoder adapters.
   - Losses: Dice + BCE for masks; optional point/box robustness.
 
 - Stage 2 — Light domain adaptation (recommended)
-  - Add LoRA to DINO’s last 2–4 blocks.
+  - Add LoRA to the backbone’s last 2–4 blocks (available for DINO out of the box; add Swin targets if desired).
   - Keep CLIP text frozen; keep SAM adapters trainable.
   - Data: mix unlabelled with labelled/pseudo-labelled. Optionally enable self-distillation/MIM (small weight) and CLIP alignment loss (small weight) to stabilise semantics.
 
 - Stage 3 — More labels (≥2–3k masks)
-  - Unfreeze more of DINO with low LR while keeping LoRA on; optionally tiny LoRA on CLIP text cross-attn inside the decoder.
+  - Unfreeze more of the backbone with low LR while keeping LoRA on; optionally tiny LoRA on CLIP text cross-attn inside the decoder.
   - Keep CLIP alignment loss on to reduce degradation.
 
 Quick Start
@@ -55,17 +55,25 @@ python scripts/train.py --config configs/stage2.yaml data.root=/path/to/images d
 python scripts/train.py --config configs/stage3.yaml data.root=/path/to/images data.masks=/path/to/masks
 ```
 
+Need Swin instead of DINO? Swap in the paired configs `configs/stage{1,2,3,4}_swin.yaml` which already set `model.backbone.type: swin` and disable backbone LoRA by default:
+
+```
+python scripts/train.py --config configs/stage1_swin.yaml data.root=/path/to/images data.masks=/path/to/masks
+```
+
+Stage 4 follows the same pattern (`stage4.yaml` or `stage4_swin.yaml`) when you are ready to fully unfreeze the backbone.
+
 Notes
 
 - CLIP text encoder is kept frozen by default. You can enable a tiny LoRA rank via config if you must adapt prompts.
-- DINO image encoder starts frozen; LoRA can be injected in the last K blocks via config.
+- The vision backbone starts frozen; LoRA can be injected in the last K DINO blocks via config (extend `SwinBackbone.lora_target_pairs` if you need Swin LoRA).
 - We bypass SAM’s heavy image encoder and instead feed projected DINO tokens to the mask decoder.
 - Losses available: Dice + BCE, optional CLIP contrastive alignment, optional SSL/MIM with small weight.
 
 Repo Layout
 
 - `clipdinosam/`
-  - `models/`: DINO, CLIP text, SAM decoder wrappers, projection heads, model assembly.
+  - `models/`: vision backbones (`dino.py`, `swin.py`), shared interface (`vision_backbone.py`), CLIP text wrapper, SAM decoder wrappers, projection heads, model assembly.
   - `lora.py`: LoRA modules and injection helpers.
   - `losses.py`: Dice, BCE, optional contrastive and SSL stubs.
   - `data/`: simple image(+mask) dataset.
@@ -80,8 +88,10 @@ Repo Layout
 
 Backbones
 
-- DINO (timm): use names like `vit_base_patch16_224.dino`.
-- DINOv2 (timm or hub): use timm names like `vit_large_patch14_dinov2.lvd142m`, or any name containing `dinov2` (the code will also try the official hub variants: `dinov2_vits14`, `dinov2_vitb14`, `dinov2_vitl14`, `dinov2_vitg14`). Ensure the model is available in your environment (timm or torch.hub cache).
+- The legacy configs keep a `model.dino` block; newer configs use `model.backbone` so you can swap encoders without touching code.
+- **DINO / DINOv2 (timm)**: set `model.dino.name` (or `model.backbone.name` with `type: dino`) to values such as `vit_base_patch16_224.dino` or `vit_large_patch14_dinov2.lvd142m`. dinov2 names are resolved through timm first, then torch.hub (`dinov2_vits14`, `dinov2_vitb14`, `dinov2_vitl14`, `dinov2_vitg14`).
+- **Swin Transformer (timm, supervised)**: use the `model.backbone` block with `type: swin`, `name: swin_base_patch4_window7_224` (or any other timm Swin variant). Optional keys: `out_index`/`out_indices` to select which feature map to project (defaults to the deepest stage).
+- Backbone LoRA is currently wired for DINO. When you switch to Swin, the configs disable backbone LoRA by default; add layer targets in `SwinBackbone.lora_target_pairs` if you want LoRA there.
 
 SAM Variants
 
@@ -112,10 +122,10 @@ Outputs are one file per input image (same stem) storing the embedding tensor.
 
 Stages Overview
 
-- Stage 1: Train projection + SAM adapters (LoRA on SAM), DINO frozen
-- Stage 2: Add LoRA to last K DINO blocks; train only LoRA in DINO
+- Stage 1: Train projection + SAM adapters (LoRA on SAM), backbone frozen
+- Stage 2: Add LoRA to last K backbone blocks (DINO supported out of the box)
 - Stage 3: Same as Stage 2 with lower LR and longer training
-- Stage 4: Fully unfreeze DINO (no DINO LoRA); SAM LoRA may remain enabled
+- Stage 4: Fully unfreeze backbone (disable backbone LoRA); SAM LoRA may remain enabled
 
 HAM10000 in VOC Style
 
@@ -143,6 +153,13 @@ python scripts/train.py --config configs/ham10000_voc_stage3.yaml data.root=/dat
 Stage 4 (full DINO unfreeze):
 ```
 python scripts/train.py --config configs/ham10000_voc_stage4.yaml data.root=/data/HAM10000_VOC
+```
+
+Swin backbone configs mirror each stage (`configs/ham10000_voc_stage{1-4}_swin.yaml`). Example for Stage 4 with Swin and a writable experiment directory:
+```
+python scripts/train.py --config configs/ham10000_voc_stage4_swin.yaml \
+  data.root=/data/HAM10000_VOC \
+  output.dir=experiments/runB-stage4-swin
 ```
 
 VOC-Style Evaluation (Test Split)
