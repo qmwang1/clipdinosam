@@ -3,7 +3,7 @@ from typing import Dict, List, Optional
 import torch
 import torch.nn as nn
 
-from .dino import DINOBackbone
+from .vision_backbone import VisionBackbone
 from .clip_text import CLIPTextEncoder
 from .sam_decoder import SAMDecoderWrapper
 from .projection import TokenProjection, TokenToMaskEmbedding
@@ -12,7 +12,7 @@ from .projection import TokenProjection, TokenToMaskEmbedding
 class CLIPDinoSam(nn.Module):
     def __init__(
         self,
-        dino: DINOBackbone,
+        dino: VisionBackbone,
         clip_text: CLIPTextEncoder,
         sam: SAMDecoderWrapper,
         token_to_text: TokenProjection,

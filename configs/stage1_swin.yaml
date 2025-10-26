@@ -1,10 +1,11 @@
 stage: 1
 
 model:
-  dino:
-    name: vit_base_patch16_224.dino
-    # type: swin  # set to 'swin' and update name to try a supervised Swin backbone
-    # out_index: 3  # optional Swin feature level selection
+  backbone:
+    type: swin
+    name: swin_base_patch4_window7_224
+    pretrained: true
+    out_index: 3  # uses the 1/32 stride stage; adjust if you need denser grids
   clip:
     name: ViT-L-14
   sam:
@@ -38,4 +39,5 @@ lora:
     alpha: 8
     dropout: 0.0
     targets: ["attn", "mlp", "proj", "lin"]
-
+  dino:
+    enable: false  # set true if you add Swin-specific LoRA targets later

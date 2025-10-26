@@ -1,5 +1,6 @@
 from typing import Dict, List, Optional
 import os
+import warnings
 
 import torch
 import torch.nn as nn
@@ -10,7 +11,7 @@ from torch.utils.data.distributed import DistributedSampler
 from torchvision import transforms
 
 from .models import (
-    build_dino,
+    build_backbone,
     build_clip_text,
     build_sam_decoder,
     TokenProjection,
@@ -62,7 +63,21 @@ class Trainer:
 
     def _build_model(self):
         mcfg = self.cfg["model"]
-        dino = build_dino(mcfg["dino"]["name"], pretrained=True)
+        backbone_cfg = mcfg.get("backbone") or mcfg.get("dino")
+        if backbone_cfg is None:
+            raise KeyError("Model config must define either 'backbone' or 'dino' settings.")
+        backbone_name = backbone_cfg.get("name")
+        if backbone_name is None:
+            raise KeyError("Backbone config requires a 'name'.")
+        backbone_type = backbone_cfg.get("type")
+        backbone_pretrained = backbone_cfg.get("pretrained", True)
+        backbone_kwargs = {k: v for k, v in backbone_cfg.items() if k not in {"name", "type", "pretrained"}}
+        dino = build_backbone(
+            backbone_name,
+            backbone_type=backbone_type,
+            pretrained=backbone_pretrained,
+            **backbone_kwargs,
+        )
         clip_text = build_clip_text(mcfg["clip"]["name"], pretrained=mcfg["clip"].get("pretrained", "openai"))
         # Build SAM or SAM2 decoder per config
         sam_type = mcfg["sam"]["type"]
@@ -87,7 +102,7 @@ class Trainer:
 
         # Freeze CLIP text
         set_trainable(self.model.clip_text, False)
-        # DINO freeze by default
+        # Backbone freeze by default
         set_trainable(self.model.dino, False)
 
         # Train projection and SAM adapters in Stage 1
@@ -99,27 +114,28 @@ class Trainer:
             inject_lora_linear(self.model.sam, sam_targets, rank=lora_cfg["sam"].get("rank", 8), alpha=lora_cfg["sam"].get("alpha", 8), dropout=lora_cfg["sam"].get("dropout", 0.0))
 
         if stage in (2, 3):
-            # Add LoRA to DINO last K blocks and train only LoRA params
+            # Add LoRA adapters to the vision backbone when supported.
             dino_lora = lora_cfg.get("dino", {})
             if dino_lora.get("enable", True):
                 k = dino_lora.get("last_k_blocks", 2)
-                # Build target substrings for last k blocks
-                block_targets = []
-                if hasattr(self.model.dino.model, "blocks"):
-                    total = len(self.model.dino.model.blocks)
-                    for i in range(total - k, total):
-                        block_targets += [f"blocks.{i}.attn", f"blocks.{i}.mlp"]
-                inject_lora_linear(
-                    self.model.dino.model,
-                    block_targets,
-                    rank=dino_lora.get("rank", 8),
-                    alpha=dino_lora.get("alpha", 8),
-                    dropout=dino_lora.get("dropout", 0.0),
-                )
-            # Keep DINO otherwise frozen (only LoRA updates trainable)
+                target_pairs = self.model.dino.lora_target_pairs(k)
+                total_replaced = 0
+                for module, target_substrings in target_pairs:
+                    replaced = inject_lora_linear(
+                        module,
+                        target_substrings,
+                        rank=dino_lora.get("rank", 8),
+                        alpha=dino_lora.get("alpha", 8),
+                        dropout=dino_lora.get("dropout", 0.0),
+                    )
+                    total_replaced += len(replaced)
+                if total_replaced == 0:
+                    warnings.warn(
+                        "LoRA enabled for backbone but no target linear layers were matched; skipping injection."
+                    )
             enable_only_lora(self.model.dino)
         elif stage >= 4:
-            # Fully unfreeze DINO without adding LoRA adapters
+            # Fully unfreeze backbone without adding LoRA adapters
             set_trainable(self.model.dino, True)
 
         # Move entire model to the desired device AFTER LoRA injection so LoRA params move too
