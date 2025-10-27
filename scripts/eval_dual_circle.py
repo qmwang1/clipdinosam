@@ -1,11 +1,12 @@
 ###python scripts/eval_dual_circle.py --config configs/ham10000_voc_stage3.yaml --checkpoint experiments/runA-stage3/checkpoints/latest.pt --image_dir ~/Documents/AllBruiseTrainingData/Unlabelled/uni_dataset/no_circle_data --circle_dir ~/Documents/AllBruiseTrainingData/Unlabelled/uni_dataset/circle_mask --output_csv experiments/runA-stage3/dual_circle_results.csv
 
 import argparse
+import warnings
 import torch
 
 from clipdinosam.config import load_config_with_overrides
 from clipdinosam.models import (
-    build_dino,
+    build_backbone,
     build_clip_text,
     build_sam_decoder,
     TokenProjection,
@@ -19,20 +20,37 @@ from clipdinosam.lora import inject_lora_linear, set_trainable, enable_only_lora
 
 def build_model_from_cfg(cfg, device: torch.device) -> CLIPDinoSam:
     mcfg = cfg["model"]
-    dino = build_dino(mcfg["dino"]["name"], pretrained=True)
-    clip_text = build_clip_text(mcfg["clip"]["name"], pretrained=mcfg["clip"].get("pretrained", "openai"))
-    sam_type = mcfg["sam"]["type"]
+    backbone_cfg = mcfg.get("backbone") or mcfg.get("dino")
+    if backbone_cfg is None:
+        raise KeyError("Model config must define either 'backbone' or 'dino' settings.")
+    backbone_name = backbone_cfg.get("name")
+    if backbone_name is None:
+        raise KeyError("Backbone config requires a 'name'.")
+    backbone_type = backbone_cfg.get("type")
+    backbone_pretrained = backbone_cfg.get("pretrained", True)
+    backbone_kwargs = {k: v for k, v in backbone_cfg.items() if k not in {"name", "type", "pretrained"}}
+    dino = build_backbone(
+        backbone_name,
+        backbone_type=backbone_type,
+        pretrained=backbone_pretrained,
+        **backbone_kwargs,
+    )
+
+    clip_cfg = mcfg["clip"]
+    clip_text = build_clip_text(clip_cfg["name"], pretrained=clip_cfg.get("pretrained", "openai"))
+    sam_cfg = mcfg["sam"]
+    sam_type = sam_cfg["type"]
     if isinstance(sam_type, str) and "sam2" in sam_type.lower():
         sam = build_sam2_decoder(
             sam_type=sam_type,
-            config=mcfg["sam"].get("config"),
-            checkpoint=mcfg["sam"].get("checkpoint"),
+            config=sam_cfg.get("config"),
+            checkpoint=sam_cfg.get("checkpoint"),
         )
     else:
-        sam = build_sam_decoder(sam_type, checkpoint=mcfg["sam"].get("checkpoint"))
+        sam = build_sam_decoder(sam_type, checkpoint=sam_cfg.get("checkpoint"))
 
-    token_to_text = TokenProjection(in_dim=dino.embed_dim, out_dim=mcfg["clip"].get("width", clip_text.width))
-    token_to_mask = TokenToMaskEmbedding(in_dim=dino.embed_dim, embed_dim=mcfg["sam"].get("embed_dim", 256))
+    token_to_text = TokenProjection(in_dim=dino.embed_dim, out_dim=clip_cfg.get("width", clip_text.width))
+    token_to_mask = TokenToMaskEmbedding(in_dim=dino.embed_dim, embed_dim=sam_cfg.get("embed_dim", 256))
     model = CLIPDinoSam(dino, clip_text, sam, token_to_text, token_to_mask)
 
     # Mirror training-time LoRA and freezing so checkpoints load properly
@@ -62,18 +80,21 @@ def build_model_from_cfg(cfg, device: torch.device) -> CLIPDinoSam:
         dino_lora = lora_cfg.get("dino", {})
         if dino_lora.get("enable", True):
             k = dino_lora.get("last_k_blocks", 2)
-            block_targets = []
-            if hasattr(model.dino.model, "blocks"):
-                total = len(model.dino.model.blocks)
-                for i in range(total - k, total):
-                    block_targets += [f"blocks.{i}.attn", f"blocks.{i}.mlp"]
-            inject_lora_linear(
-                model.dino.model,
-                block_targets,
-                rank=dino_lora.get("rank", 8),
-                alpha=dino_lora.get("alpha", 8),
-                dropout=dino_lora.get("dropout", 0.0),
-            )
+            target_pairs = model.dino.lora_target_pairs(k)
+            total_replaced = 0
+            for module, target_substrings in target_pairs:
+                replaced = inject_lora_linear(
+                    module,
+                    target_substrings,
+                    rank=dino_lora.get("rank", 8),
+                    alpha=dino_lora.get("alpha", 8),
+                    dropout=dino_lora.get("dropout", 0.0),
+                )
+                total_replaced += len(replaced)
+            if total_replaced == 0 and target_pairs:
+                warnings.warn(
+                    "LoRA enabled for backbone but no target linear layers were matched; skipping injection."
+                )
         enable_only_lora(model.dino)
     elif stage >= 4:
         set_trainable(model.dino, True)

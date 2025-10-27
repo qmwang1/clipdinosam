@@ -5,10 +5,8 @@ python scripts/eval_dual_circle.py \
     --config configs/ham10000_voc_stage4_sam2_dinov2.yaml \
     --checkpoint experiments/runC-stage4-150epochs/checkpoints/best.pt \
     --image_dir ~/Documents/AllBruiseTrainingData/Unlabelled/uni_dataset/CleanData \
-    --circle_dir ~/Documents/AllBruiseTrainingData/Unlabelled/uni_dataset/clean_data_ma
-sk \             
-    --ignore_rect_dir ~/Documents/AllBruiseTrainingData/Unlabelled/uni_dataset/blue_rec
-t_masks \
+    --circle_dir ~/Documents/AllBruiseTrainingData/Unlabelled/uni_dataset/clean_data_mask \             
+    --ignore_rect_dir ~/Documents/AllBruiseTrainingData/Unlabelled/uni_dataset/blue_rect_masks \
     --output_csv experiments/runC-stage4-150epochs/eval_test_full_image.csv \
     --text "lesions on light skin" \
     model.dino.name=vit_base_patch16_224.dino
