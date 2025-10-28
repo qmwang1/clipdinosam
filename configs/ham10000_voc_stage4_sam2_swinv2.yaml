@@ -25,7 +25,7 @@ data:
   num_workers: 4
 
 optim:
-  batch_size: 1
+  batch_size: 8
   lr: 2.0e-5
   lora_lr: 3.0e-4
   wd: 1.0e-4
