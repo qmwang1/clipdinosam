@@ -1,5 +1,5 @@
-To run stage 4 trainning with checkpoint saving feature, and dual circle evaluation\
-`python scripts/train.py --config configs/ham10000_voc_stage4.yaml data.root=/home/qiming/Documents/Datasets/VOCDatasets/HAM10000_VOC/VOCdevkit/VOC2012  output.dir=/experiments/runB-stage4-150epochs checkpoint.save_best=true checkpoint.save_latest=true checkpoint.keep_per_epoch=false eval.dual_circle.enable=true eval.dual_circle.image_dir=~/Documents/AllBruiseTrainingData/Unlabelled/uni_dataset/no_circle_data eval.dual_circle.circle_dir=~/Documents/AllBruiseTrainingData/Unlabelled/uni_dataset/circle_mask eval.dual_circle.output_dir=/experiments/runB-stage4-150epochs/eval/dual_circle_results.csv`
+To run stage 4 training, evaluate dual-circle F1 every epoch, and save the best checkpoint based on that metric:
+`python scripts/train.py --config configs/ham10000_voc_stage4.yaml data.root=/home/qiming/Documents/Datasets/VOCDatasets/HAM10000_VOC/VOCdevkit/VOC2012 output.dir=/experiments/runB-stage4-150epochs checkpoint.save_best=true checkpoint.save_latest=true checkpoint.keep_per_epoch=false checkpoint.best_metric=dual_circle_f1 eval.dual_circle.enable=true eval.dual_circle.image_dir=~/Documents/AllBruiseTrainingData/Unlabelled/uni_dataset/no_circle_data eval.dual_circle.circle_dir=~/Documents/AllBruiseTrainingData/Unlabelled/uni_dataset/circle_mask eval.dual_circle.output_dir=/experiments/runB-stage4-150epochs/eval`
 
 python scripts/eval_dual_circle.py \
     --config configs/ham10000_voc_stage4_sam2_dinov2.yaml \
@@ -16,8 +16,6 @@ python scripts/train.py --config configs/ham10000_voc_stage4_swin.yaml \
     output.dir=experiments/runB-stage4-150epochs-swin \
     checkpoint.save_best=true checkpoint.save_latest=true checkpoint.keep_per_epoch=false \
     eval.dual_circle.enable=true \
-    eval.dual_circle.image_dir=~/Documents/AllBruiseTrainingData/Unlabelled/uni_dataset/
-  no_circle_data \
-    eval.dual_circle.circle_dir=~/Documents/AllBruiseTrainingData/Unlabelled/uni_dataset/
-  circle_mask \
-    eval.dual_circle.output_dir=experiments/runB-stage4-150epochs-swin/eval/dual_circle_results.csv
+    eval.dual_circle.image_dir=~/Documents/AllBruiseTrainingData/Unlabelled/uni_dataset/no_circle_data \
+    eval.dual_circle.circle_dir=~/Documents/AllBruiseTrainingData/Unlabelled/uni_dataset/circle_mask \
+    eval.dual_circle.output_dir=experiments/runB-stage4-150epochs-swin/eval

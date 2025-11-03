@@ -56,7 +56,24 @@ class Trainer:
             self.amp_dtype = None
         self.scaler = torch.cuda.amp.GradScaler() if (self.amp_enabled and self.amp_dtype == torch.float16) else None
 
-        self.best_loss: Optional[float] = None
+        ckpt_cfg = self.cfg.get("checkpoint", {})
+        best_metric_raw = str(ckpt_cfg.get("best_metric", "train_loss")).lower()
+        best_metric_aliases = {
+            "loss": "train_loss",
+            "train_loss": "train_loss",
+            "dual_circle_f1": "dual_circle_overall_f1",
+            "dual_circle_overall_f1": "dual_circle_overall_f1",
+            "dual_circle_mean_f1": "dual_circle_mean_f1",
+        }
+        best_metric = best_metric_aliases.get(best_metric_raw)
+        if best_metric is None:
+            warnings.warn(f"Unknown checkpoint.best_metric '{best_metric_raw}', falling back to train_loss.")
+            best_metric = "train_loss"
+        self.best_metric_name = best_metric
+        self.best_metric_lower_is_better = self.best_metric_name == "train_loss"
+        self.best_metric_value: Optional[float] = None
+        self.last_train_loss: Optional[float] = None
+
         self._build_model()
         self._build_data()
         self._build_optim()
@@ -265,6 +282,7 @@ class Trainer:
             if (not self.distributed) or self.rank == 0:
                 print(f"Epoch {epoch}: loss={avg:.4f}")
                 self._save_checkpoint(epoch, avg)
+                self.last_train_loss = avg
 
             # Optional dual-circle evaluation each epoch
             self._maybe_eval_epoch(epoch)
@@ -281,8 +299,16 @@ class Trainer:
             except Exception:
                 pass
 
-    def _save_checkpoint(self, epoch: int, avg_loss: float):
-        """Save only 'latest.pt' and optionally 'best.pt' (lowest loss), unless keep_per_epoch is enabled."""
+    def _save_checkpoint(
+        self,
+        epoch: int,
+        avg_loss: float,
+        *,
+        best_metric_value: Optional[float] = None,
+        best_metric_payload: Optional[Dict] = None,
+        update_latest: bool = True,
+    ):
+        """Handle checkpoint persistence (latest/per-epoch) and optionally update best based on configured metric."""
         ckpt_cfg = self.cfg.get("checkpoint", {})
         out_root = self.cfg.get("output", {}).get("dir")
         # Priority: explicit checkpoint.dir > output.dir/checkpoints > ./checkpoints
@@ -297,19 +323,23 @@ class Trainer:
             "cfg": self.cfg,
             "train_loss": avg_loss,
         }
+        state["best_metric_name"] = self.best_metric_name
+        state["best_metric_value"] = best_metric_value if best_metric_value is not None else avg_loss if self.best_metric_name == "train_loss" else None
+        if best_metric_payload and self.best_metric_name != "train_loss":
+            state["dual_circle_metrics"] = best_metric_payload
 
         keep_per_epoch = ckpt_cfg.get("keep_per_epoch", False)
         save_best = ckpt_cfg.get("save_best", True)
         save_latest = ckpt_cfg.get("save_latest", True)
 
-        if keep_per_epoch:
+        if update_latest and keep_per_epoch:
             path = os.path.join(out_dir, f"epoch_{epoch}.pt")
             try:
                 torch.save(state, path)
             except Exception as e:
                 print(f"Warning: failed to save per-epoch checkpoint: {e}")
 
-        if save_latest:
+        if update_latest and save_latest:
             latest = os.path.join(out_dir, "latest.pt")
             try:
                 torch.save(state, latest)
@@ -317,13 +347,28 @@ class Trainer:
                 print(f"Warning: failed to save latest checkpoint: {e}")
 
         if save_best:
-            is_best = self.best_loss is None or avg_loss < self.best_loss
-            if is_best:
-                self.best_loss = avg_loss
+            metric_value: Optional[float]
+            metric_name = self.best_metric_name
+            if metric_name == "train_loss":
+                metric_value = avg_loss
+            else:
+                metric_value = best_metric_value
+
+            if metric_value is None:
+                return
+
+            better = (
+                self.best_metric_value is None
+                or (self.best_metric_lower_is_better and metric_value < self.best_metric_value)
+                or (not self.best_metric_lower_is_better and metric_value > self.best_metric_value)
+            )
+            if better:
+                self.best_metric_value = metric_value
                 best = os.path.join(out_dir, "best.pt")
                 try:
                     torch.save(state, best)
-                    print(f"New best (loss={avg_loss:.4f}) saved to {best}")
+                    metric_str = f"{metric_name}={metric_value:.4f}"
+                    print(f"New best ({metric_str}) saved to {best}")
                 except Exception as e:
                     print(f"Warning: failed to save best checkpoint: {e}")
 
@@ -389,3 +434,27 @@ class Trainer:
             print(f"  Mean TP %: {metrics['mean_tp_percentage']:.2f}%")
             print(f"  Mean FP %: {metrics['mean_fp_percentage']:.2f}%")
             print(f"  Mean F1  : {metrics['mean_f1_score']:.4f} (±{metrics['std_f1_score']:.4f})")
+            self._maybe_update_best_from_eval(epoch, metrics)
+
+    def _maybe_update_best_from_eval(self, epoch: int, metrics: Dict):
+        """If configured, update the best checkpoint based on dual-circle evaluation metrics."""
+        if self.best_metric_name not in {"dual_circle_overall_f1", "dual_circle_mean_f1"}:
+            return
+
+        metric_key = "overall_f1" if self.best_metric_name == "dual_circle_overall_f1" else "mean_f1_score"
+        metric_value_raw = metrics.get(metric_key)
+        if metric_value_raw is None:
+            return
+        metric_value = float(metric_value_raw)
+
+        # Drop heavy objects (e.g., DataFrame) before saving inside the checkpoint.
+        metric_summary = {k: v for k, v in metrics.items() if k != "detailed_results"}
+
+        train_loss = self.last_train_loss if self.last_train_loss is not None else 0.0
+        self._save_checkpoint(
+            epoch,
+            train_loss,
+            best_metric_value=metric_value,
+            best_metric_payload=metric_summary,
+            update_latest=False,
+        )

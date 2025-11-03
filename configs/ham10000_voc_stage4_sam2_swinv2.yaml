@@ -49,3 +49,19 @@ lora:
     rank: 16
     alpha: 16
     dropout: 0.0
+
+output:
+  dir: experiments/runB-stage4-150epochs
+
+checkpoint:
+  save_best: true
+  save_latest: true
+  keep_per_epoch: false
+  best_metric: dual_circle_f1
+
+eval:
+  dual_circle:
+    enable: true
+    image_dir: ~/Documents/AllBruiseTrainingData/Unlabelled/uni_dataset/no_circle_data
+    circle_dir: ~/Documents/AllBruiseTrainingData/Unlabelled/uni_dataset/circle_mask
+    output_dir: experiments/runB-stage4-150epochs/eval

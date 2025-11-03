@@ -53,7 +53,9 @@ class VOCSegDataset(Dataset):
                 if candidate.exists():
                     split_path = candidate
             if split_path is not None and split_path.exists():
-                ids = [line.strip() for line in split_path.read_text().splitlines() if line.strip()]
+                raw_ids = [line.strip() for line in split_path.read_text().splitlines() if line.strip()]
+                filtered_ids = self._filter_candidate_ids(raw_ids)
+                ids = filtered_ids if filtered_ids else None
 
         if ids is None:
             # All images in JPEGImages
@@ -74,6 +76,21 @@ class VOCSegDataset(Dataset):
         if not matches:
             raise FileNotFoundError(f"Image for id {stem} not found in {self.image_dir}")
         return matches[0]
+
+    @staticmethod
+    def _filter_candidate_ids(lines: List[str]) -> List[str]:
+        """Remove lines that look like metadata (e.g., Git LFS pointers or comments)."""
+        valid_chars = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_.-/")
+        filtered: List[str] = []
+        for line in lines:
+            if line.startswith("#"):
+                continue
+            if any(ch.isspace() for ch in line):
+                continue
+            if not set(line).issubset(valid_chars):
+                continue
+            filtered.append(line)
+        return filtered
 
     def __getitem__(self, idx: int) -> Dict:
         id_ = self.ids[idx]
@@ -96,4 +113,3 @@ class VOCSegDataset(Dataset):
             "text": self.text_prompt,
             "id": id_,
         }
-

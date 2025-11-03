@@ -2,6 +2,7 @@
 
 import argparse
 import warnings
+import pickle
 import torch
 
 from clipdinosam.config import load_config_with_overrides
@@ -129,7 +130,18 @@ def main():
     model = build_model_from_cfg(cfg, device)
 
     print(f"Loading checkpoint: {args.checkpoint}")
-    state = torch.load(args.checkpoint, map_location=device)
+    try:
+        state = torch.load(args.checkpoint, map_location=device)
+    except pickle.UnpicklingError as err:
+        msg = str(err).lower()
+        if "weights only load failed" in msg or "unsupported global" in msg:
+            warnings.warn(
+                "Falling back to torch.load(..., weights_only=False) for this checkpoint; "
+                "ensure the file comes from a trusted source."
+            )
+            state = torch.load(args.checkpoint, map_location=device, weights_only=False)
+        else:
+            raise
     missing, unexpected = model.load_state_dict(state.get("model", state), strict=False)
     if missing:
         print(f"Warning: missing keys: {len(missing)} e.g. {missing[:5]}")
