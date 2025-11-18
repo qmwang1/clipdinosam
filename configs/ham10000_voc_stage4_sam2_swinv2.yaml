@@ -57,7 +57,7 @@ checkpoint:
   save_best: true
   save_latest: true
   keep_per_epoch: false
-  best_metric: dual_circle_f1
+  best_metric: train_loss
 
 eval:
   dual_circle:

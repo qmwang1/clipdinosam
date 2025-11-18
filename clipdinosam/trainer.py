@@ -1,4 +1,5 @@
 from typing import Dict, List, Optional
+import json
 import os
 import warnings
 
@@ -28,6 +29,7 @@ from .eval import evaluate_dual_circle_dataset
 class Trainer:
     def __init__(self, cfg: Dict):
         self.cfg = cfg
+        self._init_metric_tracking()
         # Distributed setup
         self.distributed = False
         self.rank = 0
@@ -285,7 +287,9 @@ class Trainer:
                 self.last_train_loss = avg
 
             # Optional dual-circle evaluation each epoch
-            self._maybe_eval_epoch(epoch)
+            eval_metrics = self._maybe_eval_epoch(epoch)
+            if (not self.distributed) or self.rank == 0:
+                self._record_epoch_metrics(epoch, avg, eval_metrics)
             # Restore train mode for next epoch after eval switches to eval() internally
             self.model.train()
         # Graceful DDP teardown
@@ -372,20 +376,22 @@ class Trainer:
                 except Exception as e:
                     print(f"Warning: failed to save best checkpoint: {e}")
 
-    def _maybe_eval_epoch(self, epoch: int):
+    def _maybe_eval_epoch(self, epoch: int) -> Optional[Dict]:
         """Optionally run dual-circle evaluation after each epoch and print summary metrics."""
         # Only perform evaluation on main process
         if self.distributed and self.rank != 0:
-            return
+            return None
         ecfg = self.cfg.get("eval", {}).get("dual_circle", {})
-        if not ecfg or not ecfg.get("enable", False):
-            return
+        if not ecfg:
+            return None
+        if ecfg.get("enable") is False:
+            return None
         image_dir = ecfg.get("image_dir")
         circle_dir = ecfg.get("circle_dir")
         rect_dir = ecfg.get("ignore_rect_dir") or ecfg.get("rectangle_dir")
         if not image_dir or not circle_dir:
             print("Eval skipped: eval.dual_circle.image_dir or circle_dir not set")
-            return
+            return None
         # Determine output path for per-epoch CSV if requested
         out_root = self.cfg.get("output", {}).get("dir")
         eval_out_dir = ecfg.get("output_dir") or (os.path.join(out_root, "eval") if out_root else None)
@@ -413,28 +419,30 @@ class Trainer:
             visualize_specific=None,
             input_size=input_size,
         )
-        if metrics:
-            print("\n" + "=" * 60)
-            print(f"EPOCH {epoch} — DUAL-CIRCLE EVALUATION")
-            print("=" * 60)
-            print(f"Images processed: {metrics['num_images']}")
-            print(f"Overall Precision: {metrics['overall_precision']:.4f}")
-            print(f"Overall Recall:    {metrics['overall_recall']:.4f}")
-            print(f"Overall F1 Score:  {metrics['overall_f1']:.4f}")
-            print(f"Overall Accuracy:  {metrics['overall_accuracy']:.4f}")
-            print()
-            print("Confusion Matrix (aggregated):")
-            print(f"  True Positives:  {metrics['total_tp']:,}")
-            print(f"  False Positives: {metrics['total_fp']:,}")
-            print(f"  True Negatives:  {metrics['total_tn']:,}")
-            print(f"  False Negatives: {metrics['total_fn']:,}")
-            print(f"  Ignored Pixels:  {metrics['total_ignored']:,}")
-            print()
-            print("Per-Image Averages:")
-            print(f"  Mean TP %: {metrics['mean_tp_percentage']:.2f}%")
-            print(f"  Mean FP %: {metrics['mean_fp_percentage']:.2f}%")
-            print(f"  Mean F1  : {metrics['mean_f1_score']:.4f} (±{metrics['std_f1_score']:.4f})")
-            self._maybe_update_best_from_eval(epoch, metrics)
+        if not metrics:
+            return None
+        print("\n" + "=" * 60)
+        print(f"EPOCH {epoch} — DUAL-CIRCLE EVALUATION")
+        print("=" * 60)
+        print(f"Images processed: {metrics['num_images']}")
+        print(f"Overall Precision: {metrics['overall_precision']:.4f}")
+        print(f"Overall Recall:    {metrics['overall_recall']:.4f}")
+        print(f"Overall F1 Score:  {metrics['overall_f1']:.4f}")
+        print(f"Overall Accuracy:  {metrics['overall_accuracy']:.4f}")
+        print()
+        print("Confusion Matrix (aggregated):")
+        print(f"  True Positives:  {metrics['total_tp']:,}")
+        print(f"  False Positives: {metrics['total_fp']:,}")
+        print(f"  True Negatives:  {metrics['total_tn']:,}")
+        print(f"  False Negatives: {metrics['total_fn']:,}")
+        print(f"  Ignored Pixels:  {metrics['total_ignored']:,}")
+        print()
+        print("Per-Image Averages:")
+        print(f"  Mean TP %: {metrics['mean_tp_percentage']:.2f}%")
+        print(f"  Mean FP %: {metrics['mean_fp_percentage']:.2f}%")
+        print(f"  Mean F1  : {metrics['mean_f1_score']:.4f} (±{metrics['std_f1_score']:.4f})")
+        self._maybe_update_best_from_eval(epoch, metrics)
+        return metrics
 
     def _maybe_update_best_from_eval(self, epoch: int, metrics: Dict):
         """If configured, update the best checkpoint based on dual-circle evaluation metrics."""
@@ -458,3 +466,121 @@ class Trainer:
             best_metric_payload=metric_summary,
             update_latest=False,
         )
+
+    def _init_metric_tracking(self):
+        """Prepare paths for metric history/plots and warm-start any prior records."""
+        output_section = self.cfg.get("output") or {}
+        checkpoint_section = self.cfg.get("checkpoint") or {}
+        out_root = output_section.get("dir") if isinstance(output_section, dict) else None
+        ckpt_dir = checkpoint_section.get("dir") if isinstance(checkpoint_section, dict) else None
+        artifact_root = out_root or (os.path.dirname(ckpt_dir) or "." if ckpt_dir else ".")
+        self.artifact_root = artifact_root
+        self.training_history_path = os.path.join(self.artifact_root, "training_history.json")
+        self.training_curve_path = os.path.join(self.artifact_root, "training_curve.png")
+        self.training_history: List[Dict] = self._load_training_history()
+        self._matplotlib_modules = None
+
+    def _load_training_history(self) -> List[Dict]:
+        if not os.path.isfile(self.training_history_path):
+            return []
+        try:
+            with open(self.training_history_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except (OSError, ValueError, TypeError) as exc:
+            print(f"Warning: failed to load training history at {self.training_history_path}: {exc}")
+            return []
+
+        cleaned: List[Dict] = []
+        if isinstance(data, list):
+            for entry in data:
+                if not isinstance(entry, dict):
+                    continue
+                epoch = entry.get("epoch")
+                loss = entry.get("train_loss")
+                if epoch is None or loss is None:
+                    continue
+                record: Dict = {"epoch": int(epoch), "train_loss": float(loss)}
+                if entry.get("dual_circle_overall_f1") is not None:
+                    record["dual_circle_overall_f1"] = float(entry["dual_circle_overall_f1"])
+                if entry.get("dual_circle_mean_f1") is not None:
+                    record["dual_circle_mean_f1"] = float(entry["dual_circle_mean_f1"])
+                cleaned.append(record)
+        cleaned.sort(key=lambda item: item["epoch"])
+        return cleaned
+
+    def _record_epoch_metrics(self, epoch: int, loss: float, eval_metrics: Optional[Dict]):
+        """Persist per-epoch loss (and optional F1) and refresh the plot artifact."""
+        entry: Dict = {"epoch": int(epoch), "train_loss": float(loss)}
+        if eval_metrics:
+            if eval_metrics.get("overall_f1") is not None:
+                entry["dual_circle_overall_f1"] = float(eval_metrics["overall_f1"])
+            if eval_metrics.get("mean_f1_score") is not None:
+                entry["dual_circle_mean_f1"] = float(eval_metrics["mean_f1_score"])
+        self.training_history = [e for e in self.training_history if e.get("epoch") != entry["epoch"]]
+        self.training_history.append(entry)
+        self.training_history.sort(key=lambda item: item["epoch"])
+        os.makedirs(self.artifact_root, exist_ok=True)
+        try:
+            with open(self.training_history_path, "w", encoding="utf-8") as f:
+                json.dump(self.training_history, f, indent=2)
+        except OSError as exc:
+            print(f"Warning: failed to write training history at {self.training_history_path}: {exc}")
+            return
+        self._plot_training_history()
+
+    def _plot_training_history(self):
+        if not self.training_history:
+            return
+        if self._matplotlib_modules is False:
+            return
+        if self._matplotlib_modules is None:
+            try:
+                import matplotlib
+                matplotlib.use("Agg")
+                import matplotlib.pyplot as plt
+                self._matplotlib_modules = (matplotlib, plt)
+            except ImportError:
+                self._matplotlib_modules = False
+                if (not self.distributed) or self.rank == 0:
+                    print("Matplotlib not available; skipping training curve plot.")
+                return
+        _, plt = self._matplotlib_modules
+
+        epochs = [entry["epoch"] for entry in self.training_history]
+        losses = [entry["train_loss"] for entry in self.training_history]
+
+        fig, ax1 = plt.subplots(figsize=(8, 5))
+        ax1.plot(epochs, losses, marker="o", color="tab:blue", label="Train Loss")
+        ax1.set_xlabel("Epoch")
+        ax1.set_ylabel("Loss")
+        ax1.set_title("Training Progress")
+        ax1.grid(True, linestyle="--", linewidth=0.5, alpha=0.6)
+
+        f1_series = None
+        f1_label = None
+        for key, label in (
+            ("dual_circle_overall_f1", "Dual-Circle Overall F1"),
+            ("dual_circle_mean_f1", "Dual-Circle Mean F1"),
+        ):
+            values = [(entry["epoch"], entry.get(key)) for entry in self.training_history if entry.get(key) is not None]
+            if values:
+                f1_series = values
+                f1_label = label
+                break
+
+        if f1_series:
+            f1_epochs, f1_values = zip(*f1_series)
+            ax2 = ax1.twinx()
+            ax2.plot(f1_epochs, f1_values, marker="s", color="tab:green", label=f1_label)
+            ax2.set_ylabel(f1_label)
+            ax2.set_ylim(0.0, 1.0)
+            lines = ax1.lines + ax2.lines
+            labels = [line.get_label() for line in lines]
+            ax1.legend(lines, labels, loc="best")
+        else:
+            ax1.legend(loc="best")
+
+        fig.tight_layout()
+        os.makedirs(self.artifact_root, exist_ok=True)
+        fig.savefig(self.training_curve_path, dpi=150)
+        plt.close(fig)

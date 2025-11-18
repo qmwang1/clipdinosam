@@ -204,11 +204,11 @@ Checkpointing and Epoch Evaluation
   - `save_latest: true` — keep `latest.pt` after each epoch
   - `keep_per_epoch: false` — set `true` to also keep `epoch_{N}.pt`
 - Optional dual-circle eval after each epoch:
-  - In config, set:
+  - In config, set (dual-circle evaluation runs by default whenever this block is present; set `enable: false` to skip):
     ```yaml
     eval:
       dual_circle:
-        enable: true
+        # enable: false  # optional, defaults to true
         image_dir: /path/to/no_circle_images
         circle_dir: /path/to/circle_masks
         # output_dir: /path/to/save/per-epoch/csv  # optional
