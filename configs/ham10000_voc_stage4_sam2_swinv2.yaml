@@ -61,7 +61,7 @@ checkpoint:
 
 eval:
   dual_circle:
-    enable: true
-    image_dir: ~/Documents/AllBruiseTrainingData/Unlabelled/uni_dataset/no_circle_data
-    circle_dir: ~/Documents/AllBruiseTrainingData/Unlabelled/uni_dataset/circle_mask
-    output_dir: experiments/runB-stage4-150epochs/eval
+    enable: false
+    image_dir:
+    circle_dir:
+    output_dir:

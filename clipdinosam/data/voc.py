@@ -1,5 +1,6 @@
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Union
+import warnings
 
 from PIL import Image
 import torch
@@ -35,13 +36,26 @@ class VOCSegDataset(Dataset):
         images_exts: Optional[List[str]] = None,
     ):
         self.root = Path(root)
+        if not self.root.exists():
+            raise FileNotFoundError(f"Dataset root not found: {self.root}")
         self.transform = transform
         self.mask_transform = mask_transform
         self.text_prompt = text_prompt
         self.binary = binary
-        self.image_dir = self.root / image_dir
+        self.image_dir = self.root / image_dir if image_dir else self.root
         self.mask_dir = self.root / mask_dir
         self.images_exts = images_exts or [".jpg", ".jpeg", ".png"]
+
+        if not self.image_dir.exists():
+            # Gracefully fallback to using the root directory if it directly contains images.
+            root_images = [p for p in self.root.iterdir() if p.is_file() and p.suffix.lower() in self.images_exts]
+            if root_images:
+                warnings.warn(f"Image directory {self.image_dir} not found; falling back to dataset root {self.root}.")
+                self.image_dir = self.root
+            else:
+                raise FileNotFoundError(
+                    f"Image directory {self.image_dir} not found and no images discovered directly under {self.root}."
+                )
 
         ids = None
         if split is not None:

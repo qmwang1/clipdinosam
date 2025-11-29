@@ -182,7 +182,9 @@ class Trainer:
             transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
         ])
         m_tfm = transforms.Compose([
-            transforms.Resize(dcfg.get("crop", 224), interpolation=transforms.InterpolationMode.NEAREST),
+            # Match image spatial transforms to keep masks stackable
+            transforms.Resize(dcfg.get("resize", 256), interpolation=transforms.InterpolationMode.NEAREST),
+            transforms.CenterCrop(dcfg.get("crop", 224)),
             transforms.ToTensor(),
         ])
         data_format = dcfg.get("format", "folders").lower()
@@ -290,6 +292,7 @@ class Trainer:
             eval_metrics = self._maybe_eval_epoch(epoch)
             if (not self.distributed) or self.rank == 0:
                 self._record_epoch_metrics(epoch, avg, eval_metrics)
+                self._maybe_plot_tsne(epoch)
             # Restore train mode for next epoch after eval switches to eval() internally
             self.model.train()
         # Graceful DDP teardown
@@ -584,3 +587,105 @@ class Trainer:
         os.makedirs(self.artifact_root, exist_ok=True)
         fig.savefig(self.training_curve_path, dpi=150)
         plt.close(fig)
+
+    def _maybe_plot_tsne(self, epoch: int):
+        """
+        Optionally project pooled token embeddings with t-SNE and save a scatter plot.
+        Controlled by cfg.visualize.tsne.*:
+            enable (bool), max_samples (int), max_batches (int|None),
+            perplexity (float), learning_rate (float), n_iter (int),
+            output (str) -> relative to artifact_root if not absolute.
+        """
+        # Only main process writes artifacts
+        if self.distributed and self.rank != 0:
+            return
+        vcfg = self.cfg.get("visualize", {}).get("tsne", {})
+        if not vcfg or vcfg.get("enable") is False:
+            return
+        try:
+            from sklearn.manifold import TSNE
+        except ImportError:
+            print("scikit-learn not installed; skipping t-SNE visualization.")
+            return
+        # Lazy import matplotlib to avoid conflicts with existing plotting
+        try:
+            import matplotlib
+            matplotlib.use("Agg")
+            import matplotlib.pyplot as plt
+        except ImportError:
+            print("matplotlib not available; skipping t-SNE visualization.")
+            return
+
+        max_samples = int(vcfg.get("max_samples", 256))
+        max_batches = vcfg.get("max_batches")
+        perplexity = float(vcfg.get("perplexity", 30.0))
+        lr = float(vcfg.get("learning_rate", 200.0))
+        n_iter = int(vcfg.get("n_iter", 1000))
+        out_name_raw = vcfg.get("output") or f"tsne_epoch_{epoch}.png"
+        out_name = str(out_name_raw).format(epoch=epoch)
+        out_path = out_name if os.path.isabs(out_name) else os.path.join(self.artifact_root, out_name)
+        os.makedirs(os.path.dirname(out_path), exist_ok=True)
+
+        # Collect pooled token embeddings (skip SAM for speed)
+        feats: List[torch.Tensor] = []
+        coverages: List[float] = []
+        ids: List[str] = []
+        self.model.eval()
+        with torch.no_grad():
+            for b_idx, batch in enumerate(self.train_loader):
+                if max_batches is not None and b_idx >= int(max_batches):
+                    break
+                images = batch["image"].to(self.device, non_blocking=True)
+                texts = None
+                if batch.get("text"):
+                    texts = [batch["text"]] if isinstance(batch["text"], str) else batch["text"]
+                out = self.model(images, texts=texts, skip_sam=True)
+                pooled = out["clip_tokens"].mean(dim=1)  # (B, D)
+                for i in range(pooled.size(0)):
+                    feats.append(pooled[i].detach().cpu())
+                    if batch.get("mask") is not None:
+                        mask = batch["mask"]
+                        coverage = float(mask[i].mean().item())
+                    else:
+                        coverage = 0.0
+                    coverages.append(coverage)
+                    ids.append(str(batch.get("id", f"{b_idx}_{i}")))
+                    if len(feats) >= max_samples:
+                        break
+                if len(feats) >= max_samples:
+                    break
+        if len(feats) < 2:
+            print(f"Skipping t-SNE: need >=2 samples, collected {len(feats)}.")
+            self.model.train()
+            return
+
+        feat_mat = torch.stack(feats, dim=0).numpy()
+        # Perplexity must be < num_samples; fall back gracefully
+        max_perp = max(5, min(perplexity, len(feat_mat) - 1))
+        tsne = TSNE(
+            n_components=2,
+            perplexity=max_perp,
+            learning_rate=lr,
+            n_iter=n_iter,
+            init="random",
+            metric="euclidean",
+            verbose=False,
+        )
+        coords = tsne.fit_transform(feat_mat)
+        colors = coverages
+
+        fig, ax = plt.subplots(figsize=(7, 6))
+        sc = ax.scatter(coords[:, 0], coords[:, 1], c=colors, cmap="viridis", s=16, alpha=0.85, edgecolors="none")
+        ax.set_title(f"t-SNE of CLIP tokens (epoch {epoch})")
+        ax.set_xlabel("TSNE-1")
+        ax.set_ylabel("TSNE-2")
+        cbar = plt.colorbar(sc, ax=ax, fraction=0.046, pad=0.04)
+        cbar.set_label("Mask coverage (mean)")
+        if len(ids) <= 30:
+            for (x, y), label in zip(coords, ids):
+                ax.text(x, y, str(label), fontsize=6, alpha=0.8)
+        fig.tight_layout()
+        fig.savefig(out_path, dpi=150)
+        plt.close(fig)
+        print(f"t-SNE plot saved to {out_path}")
+        self.model.train()

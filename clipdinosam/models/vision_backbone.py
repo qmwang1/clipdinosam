@@ -17,7 +17,7 @@ class VisionBackbone(nn.Module):
     def embed_dim(self) -> int:
         raise NotImplementedError
 
-    def forward_tokens(self, x: torch.Tensor) -> Tuple[torch.Tensor, Tuple[int, int]]:
+    def forward_tokens(self, x: torch.Tensor, **kwargs) -> Tuple[torch.Tensor, Tuple[int, int]]:
         raise NotImplementedError
 
     def lora_target_pairs(self, last_k: int) -> List[Tuple[nn.Module, List[str]]]:

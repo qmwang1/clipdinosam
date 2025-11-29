@@ -10,3 +10,4 @@ tqdm
 matplotlib
 hydra-core
 omegaconf
+scikit-learn

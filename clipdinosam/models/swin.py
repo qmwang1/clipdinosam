@@ -141,7 +141,7 @@ class SwinBackbone(VisionBackbone):
             if target_device is not None:
                 stage.to(target_device)
 
-    def forward_tokens(self, x: torch.Tensor) -> Tuple[torch.Tensor, Tuple[int, int]]:
+    def forward_tokens(self, x: torch.Tensor, **kwargs) -> Tuple[torch.Tensor, Tuple[int, int]]:
         self._maybe_update_input_size(x.shape[-2], x.shape[-1])
         features = self.model(x)
         feat = features[self._output_slot]

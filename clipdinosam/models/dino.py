@@ -1,5 +1,5 @@
 """DINO/DINOv2 backbone wrapper."""
-from typing import Optional, Tuple
+from typing import Dict, Optional, Tuple
 
 import warnings
 
@@ -67,7 +67,28 @@ class DINOBackbone(VisionBackbone):
     def embed_dim(self) -> int:
         return self._embed_dim
 
-    def forward_tokens(self, x: torch.Tensor) -> Tuple[torch.Tensor, Tuple[int, int]]:
+    def _compute_attention(self, attn_module: nn.Module, x: torch.Tensor) -> torch.Tensor:
+        """Recompute attention weights for a timm Attention module given its input."""
+        B, N, C = x.shape
+        qkv = attn_module.qkv(x).reshape(B, N, 3, attn_module.num_heads, attn_module.head_dim).permute(2, 0, 3, 1, 4)
+        q, k, v = qkv.unbind(0)
+        if hasattr(attn_module, "q_norm"):
+            q = attn_module.q_norm(q)
+        if hasattr(attn_module, "k_norm"):
+            k = attn_module.k_norm(k)
+        q = q * attn_module.scale
+        attn = q @ k.transpose(-2, -1)
+        attn = attn.softmax(dim=-1)
+        attn = attn_module.attn_drop(attn)
+        return attn
+
+    def forward_tokens(
+        self,
+        x: torch.Tensor,
+        return_cls: bool = False,
+        return_attn: bool = False,
+        attn_layer: int = -1,
+    ) -> Tuple[torch.Tensor, Tuple[int, int]]:
         batch = x.size(0)
         try:
             expected = None
@@ -84,28 +105,61 @@ class DINOBackbone(VisionBackbone):
         except Exception:  # pragma: no cover - resize best effort
             pass
 
-        if hasattr(self.model, "forward_features"):
-            feats = self.model.forward_features(x)
-            if isinstance(feats, dict) and "x_norm_clstoken" in feats:
-                tokens = feats["x_norm_patchtokens"]
-            elif isinstance(feats, dict) and "tokens" in feats:
-                tokens = feats["tokens"]
+        attn_handle = None
+        attn_store: Dict[str, torch.Tensor] = {}
+        if return_attn and hasattr(self.model, "blocks"):
+            blocks = getattr(self.model, "blocks", [])
+            try:
+                layer_idx = attn_layer if attn_layer >= 0 else len(blocks) + attn_layer
+                layer_idx = max(0, min(layer_idx, len(blocks) - 1))
+                attn_module = blocks[layer_idx].attn if layer_idx < len(blocks) else None
+            except Exception:
+                attn_module = None
+
+            if attn_module is not None:
+                def _attn_hook(module, inputs, output):
+                    try:
+                        attn_store["map"] = self._compute_attention(module, inputs[0])
+                    except Exception:
+                        attn_store["map"] = None
+
+                attn_handle = attn_module.register_forward_hook(_attn_hook)
+
+        cls_token = None
+        tokens = None
+        try:
+            if hasattr(self.model, "forward_features"):
+                feats = self.model.forward_features(x)
+                if isinstance(feats, dict) and "x_norm_clstoken" in feats:
+                    cls_token = feats.get("x_norm_clstoken")
+                    tokens = feats["x_norm_patchtokens"]
+                elif isinstance(feats, dict) and "tokens" in feats:
+                    tokens = feats["tokens"]
+                    cls_token = feats.get("cls_token") or feats.get("x_norm_clstoken")
+                elif torch.is_tensor(feats):
+                    # Some ViT variants return all tokens directly
+                    if feats.dim() == 3 and feats.shape[1] > 1:
+                        cls_token = feats[:, 0:1, :]
+                        tokens = feats[:, 1:, :]
+                if tokens is None:
+                    if not hasattr(self.model, "patch_embed"):
+                        raise RuntimeError("Unsupported DINO model without forward_features/patch_embed fallback")
+                    x = self.model.patch_embed(x)
+                    grid = int((x.shape[1]) ** 0.5)
+                    cls = self.model.cls_token.expand(batch, -1, -1)
+                    x = torch.cat((cls, x), dim=1)
+                    x = x + self.model.pos_embed
+                    x = self.model.pos_drop(x)
+                    for block in self.model.blocks:
+                        x = block(x)
+                    x = self.model.norm(x)
+                    cls_token = x[:, 0:1, :]
+                    tokens = x[:, 1:, :]
             else:
-                if not hasattr(self.model, "patch_embed"):
-                    raise RuntimeError("Unsupported DINO model without forward_features/patch_embed fallback")
-                x = self.model.patch_embed(x)
-                grid = int((x.shape[1]) ** 0.5)
-                cls = self.model.cls_token.expand(batch, -1, -1)
-                x = torch.cat((cls, x), dim=1)
-                x = x + self.model.pos_embed
-                x = self.model.pos_drop(x)
-                for block in self.model.blocks:
-                    x = block(x)
-                x = self.model.norm(x)
-                tokens = x[:, 1:, :]
-                return tokens, (grid, grid)
-        else:
-            raise RuntimeError("Unsupported DINO model without forward_features")
+                raise RuntimeError("Unsupported DINO model without forward_features")
+        finally:
+            if attn_handle is not None:
+                attn_handle.remove()
 
         if self.patch_embed is not None and hasattr(self.patch_embed, "grid_size"):
             height, width = self.patch_embed.grid_size
@@ -113,6 +167,10 @@ class DINOBackbone(VisionBackbone):
             num_tokens = tokens.shape[1]
             grid = int(num_tokens ** 0.5)
             height = width = grid
+
+        if return_cls or return_attn:
+            attn_map = attn_store.get("map")
+            return tokens, (height, width), cls_token, attn_map
         return tokens, (height, width)
 
     def lora_target_pairs(self, last_k: int):
