@@ -54,6 +54,7 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 from sklearn.manifold import TSNE  # noqa: E402
+from matplotlib.colors import ListedColormap, BoundaryNorm  # noqa: E402
 
 from clipdinosam.config import load_config_with_overrides
 from clipdinosam.data import VOCSegDataset, ImageMaskDataset
@@ -152,6 +153,27 @@ def _safe_collate(batch):
     return {"image": images, "mask": masks, "text": text, "id": ids}
 
 
+def compute_semantic_labels(mask_map: torch.Tensor) -> torch.Tensor:
+    """
+    Convert a mask map (H, W) into semantic labels:
+      0 = flat/background, 1 = boundary, 2 = lesion/bruise interior.
+    Boundary is detected via 3x3 max/min pooling.
+    """
+    if mask_map.ndim != 2:
+        mask_map = mask_map.squeeze()
+    mask_bin = (mask_map > 0.5).float().unsqueeze(0).unsqueeze(0)  # (1,1,H,W)
+    padding = 1  # 3x3 window
+    max_pool = F.max_pool2d(mask_bin, kernel_size=3, stride=1, padding=padding)
+    # min pooling via negation because older torch lacks min_pool2d
+    min_pool = -F.max_pool2d(-mask_bin, kernel_size=3, stride=1, padding=padding)
+    boundary = (max_pool - min_pool) > 0.0
+
+    labels = torch.zeros_like(mask_map, dtype=torch.int64)
+    labels[mask_bin[0, 0] > 0.5] = 2
+    labels[boundary[0, 0]] = 1  # boundary overrides interior
+    return labels
+
+
 def main():
     parser = argparse.ArgumentParser(description="Offline t-SNE of token embeddings.")
     parser.add_argument("--config", required=True, help="Path to YAML config")
@@ -192,6 +214,18 @@ def main():
     parser.add_argument("--image_dir", default=None, help="Optional images subdir (defaults to JPEGImages or cfg)")
     parser.add_argument("--mask_dir", default=None, help="Optional masks subdir (defaults to SegmentationClass or cfg)")
     parser.add_argument("--output", default="tsne_offline.png", help="Output PNG path")
+    parser.add_argument(
+        "--color_mode",
+        choices=["mask", "semantic", "dataset"],
+        default="mask",
+        help="Color points by mask coverage (default), semantic labels (boundary/interior/skin), or dataset label.",
+    )
+    parser.add_argument(
+        "--dataset_label",
+        type=int,
+        default=0,
+        help="Integer label for dataset coloring (used when --color_mode=dataset).",
+    )
     parser.add_argument("overrides", nargs=argparse.REMAINDER, help="key=value config overrides")
     args = parser.parse_args()
 
@@ -340,12 +374,17 @@ def main():
                     mask_map = F.interpolate(mask_tensor, size=(h, w), mode="area").detach().cpu()
                 for i in range(bsz):
                     coverage_map = mask_map[i, 0] if mask_map is not None else None
+                    semantic_map = compute_semantic_labels(coverage_map) if (coverage_map is not None and args.color_mode == "semantic") else None
                     bid = batch_ids[i] if isinstance(batch_ids, (list, tuple)) else batch_ids
                     bid = str(bid) if bid is not None else f"{b_idx}_{i}"
                     for y in range(h):
                         for x in range(w):
                             feats.append(token_map[i, y, x])
-                            if coverage_map is not None:
+                            if args.color_mode == "dataset":
+                                colors.append(args.dataset_label)
+                            elif semantic_map is not None:
+                                colors.append(int(semantic_map[y, x].item()))
+                            elif coverage_map is not None:
                                 colors.append(float(coverage_map[y, x].item()))
                             else:
                                 colors.append(0.0)
@@ -363,7 +402,9 @@ def main():
                     cls_tokens = cls_tokens[:, 0, :]
                 for i in range(bsz):
                     feats.append(cls_tokens[i].detach().cpu())
-                    if masks is not None:
+                    if args.color_mode == "dataset":
+                        colors.append(args.dataset_label)
+                    elif masks is not None:
                         colors.append(float(masks[i].mean().item()))
                     else:
                         colors.append(0.0)
@@ -380,7 +421,9 @@ def main():
                 cls_attn = cls_attn[:, 0, 1:]     # drop CLS->CLS, keep CLS->patch
                 for i in range(bsz):
                     feats.append(cls_attn[i].detach().cpu())
-                    if masks is not None:
+                    if args.color_mode == "dataset":
+                        colors.append(args.dataset_label)
+                    elif masks is not None:
                         colors.append(float(masks[i].mean().item()))
                     else:
                         colors.append(0.0)
@@ -392,7 +435,9 @@ def main():
                 pooled = tokens.mean(dim=1).cpu()
                 for i in range(pooled.size(0)):
                     feats.append(pooled[i])
-                    if masks is not None:
+                    if args.color_mode == "dataset":
+                        colors.append(args.dataset_label)
+                    elif masks is not None:
                         colors.append(float(masks[i].mean().item()))
                     else:
                         colors.append(0.0)
@@ -423,7 +468,22 @@ def main():
     out_path = args.output if os.path.isabs(args.output) else os.path.abspath(args.output)
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
     fig, ax = plt.subplots(figsize=(7, 6))
-    sc = ax.scatter(coords[:, 0], coords[:, 1], c=colors, cmap="viridis", s=16, alpha=0.85, edgecolors="none")
+    cmap = "viridis"
+    norm = None
+    cbar_ticks = None
+    cbar_ticklabels = None
+    cbar_label = "Mask coverage (mean)"
+    if args.color_mode == "semantic":
+        cmap = ListedColormap(["royalblue", "crimson", "limegreen"])
+        norm = BoundaryNorm([-0.5, 0.5, 1.5, 2.5], cmap.N)
+        cbar_ticks = [0, 1, 2]
+        cbar_ticklabels = ["flat/skin", "boundary", "lesion/bruise"]
+        cbar_label = "Semantic label"
+    elif args.color_mode == "dataset":
+        cmap = plt.cm.get_cmap("tab10")
+        cbar_label = "Dataset label"
+
+    sc = ax.scatter(coords[:, 0], coords[:, 1], c=colors, cmap=cmap, norm=norm, s=16, alpha=0.85, edgecolors="none")
     desc_map = {
         "clip_patch": "CLIP patch tokens",
         "clip_pooled": "CLIP pooled tokens",
@@ -436,8 +496,10 @@ def main():
     ax.set_title(f"t-SNE of {feature_desc} (offline)")
     ax.set_xlabel("TSNE-1")
     ax.set_ylabel("TSNE-2")
-    cbar = plt.colorbar(sc, ax=ax, fraction=0.046, pad=0.04)
-    cbar.set_label("Mask coverage (mean)")
+    cbar = plt.colorbar(sc, ax=ax, fraction=0.046, pad=0.04, ticks=cbar_ticks)
+    if cbar_ticklabels is not None:
+        cbar.ax.set_yticklabels(cbar_ticklabels)
+    cbar.set_label(cbar_label)
     if len(ids) <= 30:
         for (x, y), label in zip(coords, ids):
             ax.text(x, y, str(label), fontsize=6, alpha=0.8)
