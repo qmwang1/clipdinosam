@@ -30,11 +30,25 @@ class ImageMaskDataset(Dataset):
         else:
             self.images = candidate_images
 
+    def _candidate_mask_stems(self, stem: str):
+        """Generate possible mask stems to handle common naming tweaks (e.g., noCircles -> mask)."""
+        yield stem
+        replacements = [
+            ("noCircles", "mask"),
+            ("nocircles", "mask"),
+            ("no_circle", "mask"),
+            ("no-circles", "mask"),
+        ]
+        for old, new in replacements:
+            if old in stem:
+                yield stem.replace(old, new)
+
     def _find_mask_path(self, img_path: Path) -> Optional[Path]:
-        for ext in self.mask_exts:
-            m = self.mask_dir / (img_path.stem + ext)
-            if m.exists():
-                return m
+        for cand_stem in self._candidate_mask_stems(img_path.stem):
+            for ext in self.mask_exts:
+                m = self.mask_dir / (cand_stem + ext)
+                if m.exists():
+                    return m
         return None
 
     def __len__(self):
