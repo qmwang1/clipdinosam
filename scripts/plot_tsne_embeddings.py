@@ -57,6 +57,7 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt  # noqa: E402
 from sklearn.manifold import TSNE  # noqa: E402
 from matplotlib.colors import ListedColormap, BoundaryNorm  # noqa: E402
+from matplotlib.lines import Line2D  # noqa: E402
 
 from clipdinosam.config import load_config_with_overrides
 from clipdinosam.data import VOCSegDataset, ImageMaskDataset
@@ -667,6 +668,9 @@ def main():
     elif args.color_mode == "dataset":
         cmap = plt.cm.get_cmap("tab10")
         cbar_label = "Dataset label"
+    elif args.color_mode == "dataset_mask":
+        cmap = ListedColormap(["red", "green", "blue", "gold"])
+        norm = BoundaryNorm([-0.5, 0.5, 1.5, 2.5, 3.5], cmap.N)
 
     sc = ax.scatter(coords[:, 0], coords[:, 1], c=colors, cmap=cmap, norm=norm, s=16, alpha=0.85, edgecolors="none")
     desc_map = {
@@ -681,10 +685,23 @@ def main():
     ax.set_title(f"t-SNE of {feature_desc} (offline)")
     ax.set_xlabel("TSNE-1")
     ax.set_ylabel("TSNE-2")
-    cbar = plt.colorbar(sc, ax=ax, fraction=0.046, pad=0.04, ticks=cbar_ticks)
-    if cbar_ticklabels is not None:
-        cbar.ax.set_yticklabels(cbar_ticklabels)
-    cbar.set_label(cbar_label)
+    if args.color_mode == "dataset_mask":
+        legend_labels = [
+            f"Dataset {args.dataset_label} outside",
+            f"Dataset {args.dataset_label} inside",
+            f"Dataset {args.extra_dataset_label} outside",
+            f"Dataset {args.extra_dataset_label} inside",
+        ]
+        handles = [
+            Line2D([0], [0], marker="o", linestyle="none", color="none", markerfacecolor=cmap.colors[i], markersize=7, label=legend_labels[i])
+            for i in range(len(cmap.colors))
+        ]
+        ax.legend(handles=handles, title="Classes", loc="best")
+    else:
+        cbar = plt.colorbar(sc, ax=ax, fraction=0.046, pad=0.04, ticks=cbar_ticks)
+        if cbar_ticklabels is not None:
+            cbar.ax.set_yticklabels(cbar_ticklabels)
+        cbar.set_label(cbar_label)
     if len(ids) <= 30:
         for (x, y), label in zip(coords, ids):
             ax.text(x, y, str(label), fontsize=6, alpha=0.8)
